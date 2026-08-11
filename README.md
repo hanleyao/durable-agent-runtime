@@ -12,6 +12,7 @@ A persistent conversational Agent with a durable, dependency-aware and evaluatio
 - Agent Loop：模型决策、受限工具调用、观察、有限步数和重复调用缓存。
 - 长期记忆：SQLite memory store 与相关记忆检索。
 - LLM Planner：自然语言目标转 Task DAG，程序修复 ID、依赖、类型与环。
+- 动态 Replanner：结合失败任务、已有结果和 Evaluator 反馈生成修订 DAG，并安全复用未变化的已完成任务。
 - Task Runtime：research、analysis、report 依赖调度、失败传播和有限重试。
 - LangGraph Checkpoint：使用 `thread_id` 跨进程恢复执行状态。
 - Background Jobs：SQLite 队列、原子 claim、heartbeat、lease、取消、重试和日志。

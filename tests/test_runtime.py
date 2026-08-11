@@ -4,24 +4,96 @@ import json
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from durable_agent.agent import TaskAgent
 from durable_agent.benchmark import load_cases, run_benchmark
 from durable_agent.chat import ConversationalAgent
 from durable_agent.conversation import ConversationStore
-from durable_agent.evaluator import QualityEvaluator
+from durable_agent.config import Settings
+from durable_agent.evaluator import EvaluationReport, QualityEvaluator
 from durable_agent.e2e import E2ECase, load_e2e_cases, run_e2e, score_e2e_run
 from durable_agent.fault import run_fault_trials
 from durable_agent.jobs import JobStore
 from durable_agent.memory import MemoryStore
 from durable_agent.models import Task
-from durable_agent.planner import find_cycle, repair_plan
+from durable_agent.planner import Planner, find_cycle, repair_plan
 from durable_agent.rag import LocalRetriever
-from durable_agent.runtime import run_agent
+from durable_agent.runtime import build_graph, merge_replanned_tasks, run_agent
+from durable_agent.trace import TraceLogger
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_runtime_replan_replaces_failed_dag_and_records_history(self) -> None:
+        class PlannerStub:
+            def plan(self, goal):
+                task = Task.create("broken report", "report", task_id="broken", max_attempts=1)
+                return {task.id: task}, [], "initial"
+
+            def replan(self, goal, tasks, evaluation):
+                task = Task.create("corrected report", "report", task_id="corrected")
+                return {task.id: task}, [], "replace failed report"
+
+        class AgentStub:
+            def execute(self, goal, task, completed):
+                if task.id == "broken":
+                    return {"ok": False, "error": "injected failure", "retryable": False}
+                return {"ok": True, "result": {"report": "A corrected and sufficiently detailed report."}}
+
+        class EvaluatorStub:
+            def __init__(self):
+                self.calls = 0
+
+            def evaluate(self, data):
+                self.calls += 1
+                if self.calls == 1:
+                    return EvaluationReport(False, "replan", 0.2, {}, [], [], "replace failed branch", False, None)
+                return EvaluationReport(True, "pass", 1.0, {}, [], [], "", False, None)
+
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(Settings.load(), trace_dir=Path(directory))
+            trace = TraceLogger("replan-integration", settings)
+            graph = build_graph(PlannerStub(), AgentStub(), EvaluatorStub(), trace)
+            result = graph.invoke({
+                "run_id": "replan-integration", "goal": "write report", "phase": "created",
+                "tasks": {}, "current_task_id": "", "execution_result": {}, "evaluation": {},
+                "evaluation_count": 0, "max_evaluations": 3, "replan_count": 0,
+                "replan_history": [], "errors": [], "events": [],
+            }, config={"configurable": {"thread_id": "replan-integration"}})
+        self.assertEqual("done", result["phase"])
+        self.assertEqual(1, result["replan_count"])
+        self.assertEqual("corrected", result["replan_history"][0]["task_ids"][0])
+        self.assertEqual("done", result["tasks"]["corrected"].status)
+
+    def test_llm_replanner_builds_new_dag_and_reuses_only_unchanged_completed_work(self) -> None:
+        class Client:
+            def complete_json(self, system, user):
+                self.payload = json.loads(user)
+                return {"reasoning": "add missing evidence", "tasks": [
+                    {"id": "source", "goal": "collect checkpoint evidence", "kind": "research", "blocked_by": []},
+                    {"id": "extra", "goal": "collect recovery evidence", "kind": "research", "blocked_by": []},
+                    {"id": "report", "goal": "write corrected report", "kind": "report", "blocked_by": ["source", "extra"]},
+                ]}
+
+        old_source = Task.create("collect checkpoint evidence", "research", task_id="source")
+        old_source.status = "done"
+        old_source.result = {"answer": "usable evidence"}
+        old_report = Task.create("write report", "report", task_id="report", blocked_by=["source"])
+        old_report.status = "failed"
+        previous = {"source": old_source, "report": old_report}
+        planner = Planner(client=Client())
+        replanned, repairs, reasoning = planner.replan(
+            "research checkpoint recovery", previous, {"action": "replan", "revision_instruction": "add evidence"},
+        )
+        merged, reused = merge_replanned_tasks(previous, replanned, "add evidence")
+        self.assertEqual("add missing evidence", reasoning)
+        self.assertEqual([], repairs)
+        self.assertEqual(["source"], reused)
+        self.assertEqual("done", merged["source"].status)
+        self.assertEqual("pending", merged["extra"].status)
+        self.assertEqual(["source", "extra"], merged["report"].blocked_by)
+
     def test_fault_injection_kills_and_recovers_same_thread(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             result = run_fault_trials(

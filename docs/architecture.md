@@ -33,7 +33,7 @@ The model proposes semantic plans and task outputs. The program owns:
 
 ## Evaluation loop
 
-`revise` resets the report-producing task because existing evidence is sufficient. `replan` resets the research-analysis-report branch because upstream material is missing or execution failed. Both are bounded by `max_evaluations`. `abort` terminates immediately when success cannot be defined.
+`revise` resets the report-producing task because existing evidence is sufficient. `replan` sends the failed DAG, completed results and Evaluator feedback to the Planner, validates the replacement DAG, and reuses only completed tasks whose ID, kind, goal and dependencies are unchanged. Both actions are bounded by `max_evaluations`. `abort` terminates immediately when success cannot be defined.
 
 ## Recovery semantics
 

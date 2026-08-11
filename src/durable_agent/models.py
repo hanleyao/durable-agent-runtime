@@ -65,6 +65,8 @@ class RuntimeState(TypedDict, total=False):
     evaluation: dict[str, Any]
     evaluation_count: int
     max_evaluations: int
+    replan_count: int
+    replan_history: list[dict[str, Any]]
     errors: list[str]
     events: list[dict[str, Any]]
     final_output: dict[str, Any]

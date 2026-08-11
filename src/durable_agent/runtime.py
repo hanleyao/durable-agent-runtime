@@ -32,6 +32,30 @@ def completed_results(tasks: dict[str, Task]) -> dict[str, dict[str, Any]]:
     return {task_id: task.result or {} for task_id, task in tasks.items() if task.status == "done"}
 
 
+def merge_replanned_tasks(
+    previous: dict[str, Task],
+    replanned: dict[str, Task],
+    feedback: str,
+) -> tuple[dict[str, Task], list[str]]:
+    """Reuse only completed tasks whose stable identity and semantics did not change."""
+    reused: list[str] = []
+    for task_id, task in replanned.items():
+        old = previous.get(task_id)
+        if (
+            old and old.status == "done" and old.kind == task.kind
+            and old.goal.strip() == task.goal.strip() and old.blocked_by == task.blocked_by
+        ):
+            task.status = "done"
+            task.result = old.result
+            task.attempts = old.attempts
+            task.revisions = old.revisions
+            reused.append(task_id)
+        else:
+            task.metadata["evaluation_feedback"] = feedback
+            task.metadata["replanned"] = True
+    return replanned, reused
+
+
 def build_graph(
     planner: Planner,
     agent: TaskAgent,
@@ -187,9 +211,30 @@ def build_graph(
         action = state["evaluation"]["action"]
         instruction = state["evaluation"].get("revision_instruction", "")
         if action == "replan":
-            targets = [task for task in tasks.values() if task.kind in {"research", "analysis", "report"}]
-        else:
-            targets = [task for task in tasks.values() if task.kind == "report"]
+            replanned, repairs, reasoning = planner.replan(state["goal"], tasks, state["evaluation"])
+            merged, reused = merge_replanned_tasks(tasks, replanned, instruction)
+            replan_count = state.get("replan_count", 0) + 1
+            history = [*state.get("replan_history", []), {
+                "generation": replan_count,
+                "reasoning": reasoning,
+                "repairs": repairs,
+                "reused_tasks": reused,
+                "task_ids": list(merged),
+            }]
+            trace.event(
+                "plan_replanned", generation=replan_count, reasoning=reasoning,
+                repairs=repairs, reused_tasks=reused, tasks=list(merged),
+            )
+            if progress:
+                progress(f"[replan] generation={replan_count} tasks={len(merged)} reused={len(reused)} repairs={len(repairs)}")
+            return {
+                "tasks": merged,
+                "phase": "running",
+                "current_task_id": "",
+                "replan_count": replan_count,
+                "replan_history": history,
+            }
+        targets = [task for task in tasks.values() if task.kind == "report"]
         for task in targets:
             if task.revisions < task.max_revisions:
                 task.revisions += 1
@@ -218,6 +263,8 @@ def build_graph(
             "evaluation": evaluation,
             "tasks": {task_id: task.to_dict() for task_id, task in tasks.items()},
             "errors": state.get("errors", []),
+            "replan_count": state.get("replan_count", 0),
+            "replan_history": state.get("replan_history", []),
         }
         trace.event("run_finished", phase=phase, evaluation=evaluation)
         if progress:
@@ -310,6 +357,8 @@ def run_agent(
                 "evaluation": {},
                 "evaluation_count": 0,
                 "max_evaluations": max(1, max_evaluations),
+                "replan_count": 0,
+                "replan_history": [],
                 "errors": [],
                 "events": [],
             }
@@ -323,6 +372,8 @@ def run_agent(
             "output": output,
             "evaluation": result.get("evaluation", {}),
             "evaluation_count": result.get("evaluation_count", 0),
+            "replan_count": result.get("replan_count", 0),
+            "replan_history": result.get("replan_history", []),
             "tasks": {task_id: task.to_dict() for task_id, task in result.get("tasks", {}).items()},
             "trace_path": str(trace.path),
         }
