@@ -1,0 +1,21 @@
+{
+  "goal": "research durable checkpoint recovery",
+  "answer": "Durable checkpoint recovery persists graph state and resumes unfinished work after interruption [1].",
+  "evidence": [
+    {
+      "text": "Checkpoint persistence stores workflow state and supports recovery."
+    }
+  ],
+  "citations": [
+    {
+      "id": "[1]",
+      "url": "local://agent_runtime.md"
+    }
+  ],
+  "used_citations": ["[1]"],
+  "limitations": [],
+  "confidence": 0.8,
+  "completed_tasks": 3,
+  "total_tasks": 3,
+  "failed_tasks": []
+}

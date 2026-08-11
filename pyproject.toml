@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "durable-agent-runtime"
+version = "0.2.0"
+description = "A persistent conversational Agent with a durable, dependency-aware task runtime."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "langgraph>=1.2.8",
+  "langgraph-checkpoint-sqlite>=3.0.1"
+]
+
+[project.scripts]
+durable-agent = "durable_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+durable_agent = ["sources/*.md", "eval_set/*.json", "eval_set/*.jsonl"]

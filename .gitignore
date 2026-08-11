@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+*.egg-info
+data/*.sqlite
+data/*.sqlite-*
+logs/*.log
+traces/*.jsonl
+benchmark_results/*.json

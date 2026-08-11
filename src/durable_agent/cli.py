@@ -1,0 +1,294 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+from durable_agent.benchmark import run_benchmark
+from durable_agent.chat import ConversationalAgent, format_history
+from durable_agent.config import Settings
+from durable_agent.conversation import ConversationStore
+from durable_agent.evaluator import QualityEvaluator
+from durable_agent.jobs import Job, JobStore, launch_worker, run_worker, tail
+from durable_agent.memory import MemoryStore
+from durable_agent.runtime import run_agent
+
+
+def compact_job(job: Job) -> str:
+    return f"{job.id}  {job.status:<16} attempt={job.attempts}/{job.max_attempts}\n  goal: {job.goal}\n  updated: {job.updated_at}"
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="durable-agent", description="Durable, dependency-aware and evaluation-driven Agent runtime")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    chat = sub.add_parser("chat", help="Start or continue a persistent conversation")
+    chat.add_argument("message", nargs="?")
+    chat.add_argument("--session", default="default")
+    chat.add_argument("--mode", choices=["llm", "deterministic"], default="llm")
+    chat.add_argument("--recent-messages", type=int, default=8)
+    chat.add_argument("--quiet", action="store_true")
+    chat.add_argument("--json", action="store_true")
+
+    session = sub.add_parser("session", help="Inspect persistent conversation sessions")
+    session_sub = session.add_subparsers(dest="session_command", required=True)
+    session_list = session_sub.add_parser("list")
+    session_list.add_argument("--limit", type=int, default=20)
+    session_show = session_sub.add_parser("show")
+    session_show.add_argument("session_id")
+    session_show.add_argument("--limit", type=int, default=50)
+
+    run = sub.add_parser("run", help="Run one goal in the foreground")
+    run.add_argument("goal", nargs="?", default="")
+    run.add_argument("--mode", choices=["llm", "deterministic"], default="llm")
+    run.add_argument("--thread-id")
+    run.add_argument("--checkpoint-db")
+    run.add_argument("--continue", dest="continue_run", action="store_true")
+    run.add_argument("--max-steps", type=int, default=4)
+    run.add_argument("--max-evaluations", type=int, default=3)
+    run.add_argument("--evaluator", choices=["rules", "hybrid"], default="rules")
+    run.add_argument("--quiet", action="store_true")
+    run.add_argument("--json", action="store_true")
+
+    resume = sub.add_parser("resume", help="Continue a persisted runtime thread")
+    resume.add_argument("thread_id")
+    resume.add_argument("--mode", choices=["llm", "deterministic"], default="llm")
+    resume.add_argument("--checkpoint-db")
+    resume.add_argument("--evaluator", choices=["rules", "hybrid"], default="rules")
+    resume.add_argument("--quiet", action="store_true")
+    resume.add_argument("--json", action="store_true")
+
+    submit = sub.add_parser("submit", help="Persist a background job and return immediately")
+    submit.add_argument("goal")
+    submit.add_argument("--mode", choices=["llm", "deterministic"], default="llm")
+    submit.add_argument("--max-attempts", type=int, default=2)
+    submit.add_argument("--idempotency-key")
+    submit.add_argument("--no-start", action="store_true")
+    submit.add_argument("--database")
+
+    for name in ("status", "cancel", "retry", "logs", "wait", "start"):
+        command = sub.add_parser(name)
+        command.add_argument("job_id")
+        command.add_argument("--database")
+        if name == "status":
+            command.add_argument("--json", action="store_true")
+            command.add_argument("--tail", type=int, default=0)
+        if name == "logs":
+            command.add_argument("--lines", type=int, default=30)
+        if name == "wait":
+            command.add_argument("--poll-seconds", type=float, default=1)
+    listing = sub.add_parser("list")
+    listing.add_argument("--database")
+    listing.add_argument("--limit", type=int, default=20)
+    recover = sub.add_parser("recover")
+    recover.add_argument("--database")
+    recover.add_argument("--start", action="store_true")
+    worker = sub.add_parser("worker", help="Internal durable queue worker")
+    worker.add_argument("--database")
+    worker.add_argument("--job-id")
+    worker.add_argument("--forever", action="store_true")
+
+    evaluate = sub.add_parser("evaluate", help="Evaluate one saved Agent output JSON")
+    evaluate.add_argument("input")
+    evaluate.add_argument("--json", action="store_true")
+    benchmark = sub.add_parser("benchmark", help="Run the fixed Evaluator regression set")
+    benchmark.add_argument("--json", action="store_true")
+    benchmark.add_argument("--output")
+
+    memory = sub.add_parser("memory", help="Add or search long-term memory")
+    memory_sub = memory.add_subparsers(dest="memory_command", required=True)
+    add = memory_sub.add_parser("add")
+    add.add_argument("content")
+    add.add_argument("--kind", default="note")
+    search = memory_sub.add_parser("search")
+    search.add_argument("query")
+    search.add_argument("--limit", type=int, default=5)
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    settings = Settings.load()
+    if args.command == "chat":
+        store = ConversationStore(settings.conversation_db)
+        agent = ConversationalAgent(
+            mode=args.mode,
+            store=store,
+            recent_messages=args.recent_messages,
+        )
+        progress = None if args.quiet else lambda message: print(message, flush=True)
+
+        def respond(message: str) -> int:
+            try:
+                result = agent.reply(message, session_id=args.session, progress=progress)
+            except Exception as exc:
+                print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+                return 2
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                print(f"\nagent> {result['answer']}")
+                suffix = f" run={result['run_id']}" if result.get("run_id") else ""
+                print(f"\n[session={result['session_id']} route={result['route']}{suffix}]")
+            return 0
+
+        if args.message is not None:
+            return respond(args.message)
+        if args.json:
+            print("error: --json requires a one-shot message.", file=sys.stderr)
+            return 2
+        print(f"DURABLE AGENT CHAT  session={args.session}")
+        print("Commands: /history, /exit")
+        while True:
+            try:
+                message = input("\nyou> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 0
+            if not message:
+                continue
+            if message.lower() in {"/exit", "/quit"}:
+                return 0
+            if message.lower() == "/history":
+                print(format_history(store.history(args.session, 50)) or "no messages")
+                continue
+            respond(message)
+
+    if args.command == "session":
+        store = ConversationStore(settings.conversation_db)
+        if args.session_command == "list":
+            sessions = store.list_sessions(args.limit)
+            if not sessions:
+                print("no sessions")
+            for item in sessions:
+                print(f"{item['id']}  messages={item['message_count']}  updated={item['updated_at']}  {item['title']}")
+            return 0
+        messages = store.history(args.session_id, args.limit)
+        print(format_history(messages) or "session not found or empty")
+        return 0
+
+    if args.command in {"run", "resume"}:
+        progress = None if args.quiet else lambda message: print(message, flush=True)
+        is_resume = args.command == "resume"
+        try:
+            result = run_agent(
+                "" if is_resume else args.goal,
+                mode=args.mode,
+                thread_id=args.thread_id,
+                checkpoint_db=args.checkpoint_db,
+                continue_run=True if is_resume else args.continue_run,
+                max_steps=4 if is_resume else args.max_steps,
+                max_evaluations=3 if is_resume else args.max_evaluations,
+                evaluator_mode=args.evaluator,
+                progress=progress,
+            )
+        except Exception as exc:
+            print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            evaluation = result.get("evaluation", {})
+            print(f"\nDURABLE AGENT\nrun={result['thread_id']} status={result['phase']}")
+            if evaluation:
+                print(f"evaluation={evaluation.get('action')} score={evaluation.get('overall_score', 0):.2f}")
+            print(f"report: {result.get('output', {}).get('report', '')}")
+            print(f"trace: {result['trace_path']}")
+        return 0 if result.get("phase") == "done" else 1
+
+    if args.command in {"submit", "status", "list", "cancel", "retry", "logs", "wait", "start", "recover", "worker"}:
+        database = Path(getattr(args, "database", None) or settings.job_db).resolve()
+        if args.command == "worker":
+            status = run_worker(database, args.job_id, args.forever)
+            print(status)
+            return 0 if status in {"idle", "succeeded", "canceled"} else 1
+        store = JobStore(database)
+        if args.command == "submit":
+            job, created = store.create(args.goal, args.mode, args.max_attempts, args.idempotency_key)
+            print(f"{'submitted' if created else 'existing'} {job.id} status={job.status}")
+            if not args.no_start and job.status == "queued":
+                print(f"worker_pid={launch_worker(database, job.id)}")
+            return 0
+        if args.command == "list":
+            print("\n".join(compact_job(job) for job in store.list(args.limit)) or "no jobs")
+            return 0
+        if args.command == "recover":
+            recovered = store.recover_stale()
+            print("recovered: " + (", ".join(recovered) if recovered else "none"))
+            if recovered and args.start:
+                print(f"worker_pid={launch_worker(database)}")
+            return 0
+        job = store.get(args.job_id)
+        if not job:
+            print("job not found", file=sys.stderr)
+            return 2
+        if args.command == "status":
+            print(json.dumps(job.to_dict(), ensure_ascii=False, indent=2) if args.json else compact_job(job))
+            if args.tail:
+                print(tail(job.log_path, args.tail))
+            return 0 if job.status != "failed" else 1
+        if args.command == "start":
+            if job.status != "queued":
+                print(f"job is {job.status}; only queued jobs can start", file=sys.stderr)
+                return 1
+            print(f"worker_pid={launch_worker(database, job.id)}")
+            return 0
+        if args.command == "wait":
+            last = None
+            while True:
+                current = store.get(job.id)
+                if current is None:
+                    return 2
+                marker = (current.status, current.attempts)
+                if marker != last:
+                    print(compact_job(current), flush=True)
+                    last = marker
+                if current.status in {"succeeded", "failed", "canceled"}:
+                    return 0 if current.status in {"succeeded", "canceled"} else 1
+                time.sleep(max(0.2, args.poll_seconds))
+        if args.command == "cancel":
+            print(compact_job(store.cancel(job.id)))  # type: ignore[arg-type]
+            return 0
+        if args.command == "retry":
+            retried = store.retry(job.id)
+            print(compact_job(retried))  # type: ignore[arg-type]
+            if retried and retried.status == "queued":
+                print(f"worker_pid={launch_worker(database, retried.id)}")
+            return 0
+        print(tail(job.log_path, args.lines) or "log is empty")
+        return 0
+
+    if args.command == "evaluate":
+        payload = json.loads(Path(args.input).read_text(encoding="utf-8"))
+        report = QualityEvaluator().evaluate(payload)
+        if args.json:
+            print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        else:
+            print(f"evaluation={'PASS' if report.passed else 'FAIL'} action={report.action} score={report.overall_score:.2f}")
+            for issue in report.issues:
+                print(f"  [{issue.severity}] {issue.code}: {issue.message}")
+        return 0 if report.passed else 1
+
+    if args.command == "benchmark":
+        result = run_benchmark()
+        if args.output:
+            output = Path(args.output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            for item in result["results"]:
+                print(f"[{'OK' if item['matched'] else 'MISS'}] {item['id']:<32} expected={item['expected']:<7} actual={item['actual']:<7}")
+            print(f"cases={result['cases']} action_accuracy={result['metrics']['action_accuracy']:.1%} macro_f1={result['metrics']['macro_f1']:.3f}")
+            print(f"quality_gate={'PASS' if result['gate_passed'] else 'FAIL'}")
+        return 0 if result["gate_passed"] else 1
+
+    memory_store = MemoryStore()
+    if args.memory_command == "add":
+        print(f"memory_id={memory_store.add(args.content, args.kind)}")
+    else:
+        print(json.dumps(memory_store.search(args.query, args.limit), ensure_ascii=False, indent=2))
+    return 0

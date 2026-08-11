@@ -1,0 +1,10 @@
+{
+  "name": "durable-agent-core",
+  "version": "1.0.0",
+  "description": "Versioned synthetic regression set for the standalone runtime Evaluator.",
+  "minimum_metrics": {
+    "action_accuracy": 1.0,
+    "macro_f1": 1.0,
+    "required_issue_recall": 1.0
+  }
+}
