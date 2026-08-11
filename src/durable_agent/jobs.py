@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from durable_agent.config import Settings
+from durable_agent.conversation import ConversationStore
 from durable_agent.models import now_iso
 
 
@@ -39,6 +40,10 @@ class Job:
     cancel_requested: bool
     error: str | None
     idempotency_key: str | None
+    session_id: str | None
+    conversation_db: str | None
+    result_path: str | None
+    delivered_at: str | None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -47,6 +52,10 @@ class Job:
 class JobStore:
     def __init__(self, database: str | Path | None = None) -> None:
         self.settings = Settings.load()
+        self._custom_database = (
+            database is not None
+            and Path(database).resolve() != self.settings.job_db.resolve()
+        )
         self.database = Path(database or self.settings.job_db).resolve()
         self.database.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
@@ -59,7 +68,8 @@ class JobStore:
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                     worker_id TEXT, worker_pid INTEGER, heartbeat_at REAL,
                     lease_expires_at REAL, cancel_requested INTEGER NOT NULL DEFAULT 0,
-                    error TEXT, idempotency_key TEXT UNIQUE
+                    error TEXT, idempotency_key TEXT UNIQUE, session_id TEXT,
+                    conversation_db TEXT, result_path TEXT, delivered_at TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at);
                 CREATE TABLE IF NOT EXISTS job_events(
@@ -68,6 +78,10 @@ class JobStore:
                     event_type TEXT NOT NULL, data_json TEXT NOT NULL DEFAULT '{}'
                 );"""
             )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+            for name in ("session_id", "conversation_db", "result_path", "delivered_at"):
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
 
     @contextmanager
     def connect(self):
@@ -96,6 +110,8 @@ class JobStore:
             heartbeat_at=row["heartbeat_at"], lease_expires_at=row["lease_expires_at"],
             cancel_requested=bool(row["cancel_requested"]), error=row["error"],
             idempotency_key=row["idempotency_key"],
+            session_id=row["session_id"], conversation_db=row["conversation_db"],
+            result_path=row["result_path"], delivered_at=row["delivered_at"],
         )
 
     @staticmethod
@@ -105,7 +121,15 @@ class JobStore:
             (job_id, now_iso(), event_type, json.dumps(data, ensure_ascii=False, default=str)),
         )
 
-    def create(self, goal: str, mode: str = "llm", max_attempts: int = 2, idempotency_key: str | None = None) -> tuple[Job, bool]:
+    def create(
+        self,
+        goal: str,
+        mode: str = "llm",
+        max_attempts: int = 2,
+        idempotency_key: str | None = None,
+        session_id: str | None = None,
+        conversation_db: str | Path | None = None,
+    ) -> tuple[Job, bool]:
         if not goal.strip():
             raise ValueError("Goal is empty.")
         with self.connect() as connection:
@@ -116,12 +140,24 @@ class JobStore:
             job_id = f"job_{uuid4().hex[:12]}"
             created = now_iso()
             thread_id = f"background_{job_id}"
-            checkpoint = str(self.settings.checkpoint_db.resolve())
-            log_path = str((self.settings.log_dir / f"{job_id}.log").resolve())
+            if self._custom_database:
+                checkpoint = str((self.database.parent / "checkpoints.sqlite").resolve())
+                log_path = str((self.database.parent / "logs" / f"{job_id}.log").resolve())
+                result_path = str((self.database.parent / "job-results" / f"{job_id}.json").resolve())
+            else:
+                checkpoint = str(self.settings.checkpoint_db.resolve())
+                log_path = str((self.settings.log_dir / f"{job_id}.log").resolve())
+                result_path = str((self.settings.data_dir / "job-results" / f"{job_id}.json").resolve())
+            active_conversation_db = str(Path(conversation_db or self.settings.conversation_db).resolve()) if session_id else None
             connection.execute(
                 """INSERT INTO jobs(id,goal,mode,status,attempts,max_attempts,thread_id,checkpoint_db,
-                log_path,created_at,updated_at,idempotency_key) VALUES(?,?,?,'queued',0,?,?,?,?,?,?,?)""",
-                (job_id, goal, mode, max(1, max_attempts), thread_id, checkpoint, log_path, created, created, idempotency_key),
+                log_path,created_at,updated_at,idempotency_key,session_id,conversation_db,result_path)
+                VALUES(?,?,?,'queued',0,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    job_id, goal, mode, max(1, max_attempts), thread_id, checkpoint,
+                    log_path, created, created, idempotency_key, session_id,
+                    active_conversation_db, result_path,
+                ),
             )
             self._event(connection, job_id, "submitted", mode=mode)
             return self._job(connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()), True  # type: ignore[return-value]
@@ -211,6 +247,11 @@ class JobStore:
                 self._event(connection, job_id, status, error=error)
             return updated.rowcount == 1
 
+    def mark_delivered(self, job_id: str) -> None:
+        with self.connect() as connection:
+            connection.execute("UPDATE jobs SET delivered_at=?,updated_at=? WHERE id=?", (now_iso(), now_iso(), job_id))
+            self._event(connection, job_id, "conversation_delivered")
+
     def fail_or_retry(self, job: Job, worker_id: str, error: str) -> str:
         current = self.get(job.id)
         status = "canceled" if current and current.cancel_requested else ("queued" if job.attempts < job.max_attempts else "failed")
@@ -260,12 +301,14 @@ def run_worker(database: str | Path | None = None, job_id: str | None = None, fo
             sys.executable, "-m", "durable_agent", "run", job.goal,
             "--mode", job.mode, "--thread-id", job.thread_id,
             "--checkpoint-db", job.checkpoint_db, "--quiet",
+            "--output-json", str(job.result_path),
         ]
         if job.attempts > 1:
             command = [
                 sys.executable, "-m", "durable_agent", "run",
                 "--mode", job.mode, "--thread-id", job.thread_id,
                 "--checkpoint-db", job.checkpoint_db, "--continue", "--quiet",
+                "--output-json", str(job.result_path),
             ]
         log_path = Path(job.log_path)
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -284,8 +327,21 @@ def run_worker(database: str | Path | None = None, job_id: str | None = None, fo
                     return "lost_lease"
                 time.sleep(2)
             if process.returncode == 0:
-                store.finish(job.id, worker_id, "succeeded")
-                status = "succeeded"
+                try:
+                    if job.session_id and job.conversation_db:
+                        payload = json.loads(Path(str(job.result_path)).read_text(encoding="utf-8"))
+                        answer = str(payload.get("output", {}).get("report", "")).strip()
+                        if not answer:
+                            raise RuntimeError("Completed background task has no report to deliver.")
+                        ConversationStore(job.conversation_db).add_message(
+                            job.session_id, "assistant", answer, route="task",
+                            run_id=job.thread_id, source_id=f"job:{job.id}",
+                        )
+                        store.mark_delivered(job.id)
+                    store.finish(job.id, worker_id, "succeeded")
+                    status = "succeeded"
+                except Exception as exc:
+                    status = store.fail_or_retry(job, worker_id, f"Conversation delivery failed: {type(exc).__name__}: {exc}")
             else:
                 status = store.fail_or_retry(job, worker_id, f"Runtime exited with code {process.returncode}.")
         if job_id and status == "queued":

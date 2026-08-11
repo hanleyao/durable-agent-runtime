@@ -15,7 +15,7 @@ from durable_agent.config import Settings
 from durable_agent.evaluator import EvaluationReport, QualityEvaluator
 from durable_agent.e2e import E2ECase, load_e2e_cases, run_e2e, score_e2e_run
 from durable_agent.fault import run_fault_trials
-from durable_agent.jobs import JobStore
+from durable_agent.jobs import JobStore, run_worker
 from durable_agent.memory import MemoryStore
 from durable_agent.models import Task
 from durable_agent.planner import Planner, find_cycle, repair_plan
@@ -166,6 +166,15 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(["user", "assistant"], [item.role for item in history])
         self.assertEqual("remember checkpoint", history[0].content)
 
+    def test_conversation_delivery_source_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConversationStore(Path(directory) / "conversations.sqlite")
+            first = store.add_message("demo", "assistant", "report", source_id="job:one")
+            second = store.add_message("demo", "assistant", "report", source_id="job:one")
+            history = store.history("demo")
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(1, len(history))
+
     def test_chat_routes_task_into_existing_runtime(self) -> None:
         class Client:
             def complete_json(self, system, user):
@@ -191,6 +200,27 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual("research durable checkpoints", calls[0][0])
         self.assertEqual("Checkpoint research report [1].", history[-1].content)
         self.assertTrue(history[-1].run_id.startswith("chat_demo_"))
+
+    def test_chat_can_submit_task_without_blocking(self) -> None:
+        submitted = []
+
+        def submit(goal, session_id):
+            submitted.append((goal, session_id))
+            return {"job_id": "job_demo", "thread_id": "background_job_demo", "status": "queued"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConversationStore(Path(directory) / "conversations.sqlite")
+            agent = ConversationalAgent(mode="deterministic", store=store)
+            result = agent.reply(
+                "调研 checkpoint 并生成报告",
+                session_id="demo",
+                task_submit=submit,
+            )
+            history = store.history("demo")
+        self.assertEqual([("调研 checkpoint 并生成报告", "demo")], submitted)
+        self.assertEqual("job_demo", result["background_job_id"])
+        self.assertEqual("queued", result["task_status"])
+        self.assertIn("job_demo", history[-1].content)
 
     def test_chat_compacts_context_without_deleting_audit_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -336,6 +366,34 @@ class RuntimeTests(unittest.TestCase):
             self.assertFalse(created_again)
             self.assertEqual(first.id, second.id)
             self.assertEqual("canceled", store.cancel(first.id).status)
+
+    def test_background_worker_writes_result_back_to_conversation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            conversation_db = root / "conversations.sqlite"
+            conversations = ConversationStore(conversation_db)
+            conversations.add_message("demo", "user", "research checkpoint and generate report")
+            jobs = JobStore(root / "jobs.sqlite")
+            job, _ = jobs.create(
+                "research checkpoint and generate report",
+                "deterministic",
+                session_id="demo",
+                conversation_db=conversation_db,
+            )
+            status = run_worker(jobs.database, job.id)
+            completed = jobs.get(job.id)
+            history = conversations.history("demo")
+            duplicate = conversations.add_message(
+                "demo", "assistant", history[-1].content, source_id=f"job:{job.id}",
+            )
+            result_file_exists = Path(completed.result_path).exists()
+        self.assertEqual("succeeded", status)
+        self.assertEqual("succeeded", completed.status)
+        self.assertTrue(completed.delivered_at)
+        self.assertTrue(result_file_exists)
+        self.assertEqual(f"job:{job.id}", history[-1].source_id)
+        self.assertEqual(history[-1].id, duplicate.id)
+        self.assertEqual(2, len(history))
 
     def test_stale_worker_lease_requeues_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

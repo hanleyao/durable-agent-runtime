@@ -18,6 +18,7 @@ class Message:
     content: str
     route: str | None
     run_id: str | None
+    source_id: str | None
     created_at: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -28,6 +29,7 @@ class Message:
             "content": self.content,
             "route": self.route,
             "run_id": self.run_id,
+            "source_id": self.source_id,
             "created_at": self.created_at,
         }
 
@@ -65,11 +67,18 @@ class ConversationStore:
                     content TEXT NOT NULL,
                     route TEXT,
                     run_id TEXT,
+                    source_id TEXT,
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_messages_session_id
                 ON messages(session_id, id);
             """)
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(messages)")}
+            if "source_id" not in columns:
+                connection.execute("ALTER TABLE messages ADD COLUMN source_id TEXT")
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_source_id ON messages(source_id) WHERE source_id IS NOT NULL"
+            )
             connection.commit()
 
     def ensure_session(self, session_id: str, title: str = "") -> None:
@@ -93,26 +102,31 @@ class ConversationStore:
         *,
         route: str | None = None,
         run_id: str | None = None,
+        source_id: str | None = None,
     ) -> Message:
         if role not in {"user", "assistant"}:
             raise ValueError("role must be user or assistant.")
         self.ensure_session(session_id, content if role == "user" else "")
         timestamp = now_iso()
         with closing(self._connect()) as connection:
+            if source_id:
+                existing = connection.execute("SELECT * FROM messages WHERE source_id=?", (source_id,)).fetchone()
+                if existing is not None:
+                    return self._message(existing)
             cursor = connection.execute(
-                "INSERT INTO messages(session_id,role,content,route,run_id,created_at) VALUES(?,?,?,?,?,?)",
-                (session_id, role, content, route, run_id, timestamp),
+                "INSERT INTO messages(session_id,role,content,route,run_id,source_id,created_at) VALUES(?,?,?,?,?,?,?)",
+                (session_id, role, content, route, run_id, source_id, timestamp),
             )
             connection.execute("UPDATE sessions SET updated_at=? WHERE id=?", (timestamp, session_id))
             connection.commit()
             message_id = int(cursor.lastrowid)
-        return Message(message_id, session_id, role, content, route, run_id, timestamp)
+        return Message(message_id, session_id, role, content, route, run_id, source_id, timestamp)
 
     @staticmethod
     def _message(row: sqlite3.Row) -> Message:
         return Message(
             int(row["id"]), row["session_id"], row["role"], row["content"],
-            row["route"], row["run_id"], row["created_at"],
+            row["route"], row["run_id"], row["source_id"], row["created_at"],
         )
 
     def history(self, session_id: str, limit: int = 50) -> list[Message]:

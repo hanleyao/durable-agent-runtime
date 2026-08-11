@@ -11,6 +11,7 @@ dist/
 *.egg-info
 data/*.sqlite
 data/*.sqlite-*
+data/job-results/
 logs/*.log
 traces/*.jsonl
 benchmark_results/*.json

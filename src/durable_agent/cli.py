@@ -31,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--session", default="default")
     chat.add_argument("--mode", choices=["llm", "deterministic"], default="llm")
     chat.add_argument("--recent-messages", type=int, default=8)
+    chat.add_argument("--background", action="store_true", help="Run routed task requests as durable background jobs")
     chat.add_argument("--quiet", action="store_true")
     chat.add_argument("--json", action="store_true")
 
@@ -57,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--trace-dir", help=argparse.SUPPRESS)
     run.add_argument("--pause-before-node", choices=["plan", "schedule", "execute", "handle", "evaluate", "repair", "finalize"], help=argparse.SUPPRESS)
     run.add_argument("--pause-seconds", type=float, default=0.0, help=argparse.SUPPRESS)
+    run.add_argument("--output-json", help=argparse.SUPPRESS)
 
     resume = sub.add_parser("resume", help="Continue a persisted runtime thread")
     resume.add_argument("thread_id")
@@ -73,6 +75,8 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--idempotency-key")
     submit.add_argument("--no-start", action="store_true")
     submit.add_argument("--database")
+    submit.add_argument("--session")
+    submit.add_argument("--conversation-db")
 
     for name in ("status", "cancel", "retry", "logs", "wait", "start"):
         command = sub.add_parser(name)
@@ -159,10 +163,24 @@ def main() -> int:
             recent_messages=args.recent_messages,
         )
         progress = None if args.quiet else lambda message: print(message, flush=True)
+        job_store = JobStore(settings.job_db) if args.background else None
+
+        def submit_task(goal: str, session_id: str) -> dict[str, object]:
+            assert job_store is not None
+            job, _ = job_store.create(
+                goal, args.mode, session_id=session_id, conversation_db=store.path,
+            )
+            worker_pid = launch_worker(job_store.database, job.id)
+            return {"job_id": job.id, "thread_id": job.thread_id, "status": job.status, "worker_pid": worker_pid}
 
         def respond(message: str) -> int:
             try:
-                result = agent.reply(message, session_id=args.session, progress=progress)
+                result = agent.reply(
+                    message,
+                    session_id=args.session,
+                    progress=progress,
+                    task_submit=submit_task if args.background else None,
+                )
             except Exception as exc:
                 print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
                 return 2
@@ -171,6 +189,8 @@ def main() -> int:
             else:
                 print(f"\nagent> {result['answer']}")
                 suffix = f" run={result['run_id']}" if result.get("run_id") else ""
+                if result.get("background_job_id"):
+                    suffix += f" job={result['background_job_id']}"
                 print(f"\n[session={result['session_id']} route={result['route']}{suffix}]")
             return 0
 
@@ -231,6 +251,11 @@ def main() -> int:
         except Exception as exc:
             print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 2
+        output_json = getattr(args, "output_json", None)
+        if output_json:
+            output_path = Path(output_json)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         if args.json:
             print(json.dumps(result, ensure_ascii=False, indent=2))
         else:
@@ -250,7 +275,10 @@ def main() -> int:
             return 0 if status in {"idle", "succeeded", "canceled"} else 1
         store = JobStore(database)
         if args.command == "submit":
-            job, created = store.create(args.goal, args.mode, args.max_attempts, args.idempotency_key)
+            job, created = store.create(
+                args.goal, args.mode, args.max_attempts, args.idempotency_key,
+                session_id=args.session, conversation_db=args.conversation_db,
+            )
             print(f"{'submitted' if created else 'existing'} {job.id} status={job.status}")
             if not args.no_start and job.status == "queued":
                 print(f"worker_pid={launch_worker(database, job.id)}")

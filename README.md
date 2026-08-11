@@ -2,6 +2,25 @@
 
 A persistent conversational Agent with a durable, dependency-aware and evaluation-driven task runtime, built with Python, LangGraph and SQLite.
 
+## Background conversation tasks
+
+Long research requests can return immediately while the durable Worker continues in another process:
+
+```powershell
+durable-agent chat "调研 Agent checkpoint 并生成报告" `
+  --session internship-demo `
+  --background
+```
+
+The first reply contains a `job_id`. The user can keep chatting or exit the process. After the Worker completes and the Evaluator accepts the result, the report is written back to the same persistent session:
+
+```powershell
+durable-agent session show internship-demo
+durable-agent status <job_id>
+```
+
+The conversation acknowledgement, Job record, LangGraph checkpoint and final report are separate durable records. Result delivery is idempotent: retrying a Worker cannot append the same `job_id` report twice.
+
 这个项目把学习阶段的 Stage 2 与 Stage 3 能力整理为一个统一、可独立上传 GitHub 的工程：LLM 负责语义规划和任务决策，确定性 Runtime 负责 DAG 校验、工具边界、状态机、持久化、后台执行与质量门。
 
 ## 核心能力
