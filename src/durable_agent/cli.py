@@ -12,6 +12,13 @@ from durable_agent.config import Settings
 from durable_agent.conversation import ConversationStore
 from durable_agent.evaluator import QualityEvaluator
 from durable_agent.e2e import compare_e2e, run_e2e
+from durable_agent.eval_protocol import (
+    create_blinded_review_pack,
+    freeze_evaluation,
+    initialize_heldout,
+    validate_e2e_dataset,
+    verify_evaluation_lock,
+)
 from durable_agent.fault import DEFAULT_POINTS, load_fault_cases, run_fault_trials
 from durable_agent.jobs import Job, JobStore, launch_worker, run_worker, tail
 from durable_agent.memory import MemoryStore
@@ -118,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     e2e.add_argument("--min-pass-rate", type=float, default=1.0)
     e2e.add_argument("--quiet", action="store_true")
     e2e.add_argument("--json", action="store_true")
+    e2e.add_argument("--lock", help="Require a valid frozen evaluation lock before running")
 
     comparison = sub.add_parser("e2e-compare", help="Compare single-pass, no-quality-loop and full Agent variants")
     comparison.add_argument("--dataset")
@@ -140,6 +148,22 @@ def build_parser() -> argparse.ArgumentParser:
     fault.add_argument("--wait-timeout", type=float, default=30.0)
     fault.add_argument("--quiet", action="store_true")
     fault.add_argument("--json", action="store_true")
+
+    dataset_validate = sub.add_parser("dataset-validate", help="Validate and profile an end-to-end dataset")
+    dataset_validate.add_argument("--dataset")
+    dataset_validate.add_argument("--json", action="store_true")
+    evaluation_freeze = sub.add_parser("eval-freeze", help="Freeze dataset, rubric and critical Agent code fingerprints")
+    evaluation_freeze.add_argument("--dataset")
+    evaluation_freeze.add_argument("--rubric")
+    evaluation_freeze.add_argument("--output", required=True)
+    evaluation_verify = sub.add_parser("eval-verify", help="Verify a frozen evaluation lock")
+    evaluation_verify.add_argument("lock")
+    heldout = sub.add_parser("heldout-init", help="Create a private held-out authoring worksheet")
+    heldout.add_argument("--output")
+    heldout.add_argument("--count", type=int, default=24)
+    review = sub.add_parser("review-pack", help="Create a blinded human-review file from E2E runs")
+    review.add_argument("runs")
+    review.add_argument("--output", required=True)
 
     memory = sub.add_parser("memory", help="Add or search long-term memory")
     memory_sub = memory.add_subparsers(dest="memory_command", required=True)
@@ -362,6 +386,10 @@ def main() -> int:
         dataset = Path(args.dataset or settings.project_dir / "evals" / "e2e" / "dev.jsonl")
         progress = None if args.quiet else lambda message: print(message, flush=True)
         try:
+            if args.lock:
+                verification = verify_evaluation_lock(args.lock, project_dir=settings.project_dir)
+                if not verification["valid"]:
+                    raise ValueError(f"Evaluation lock mismatch: {verification['mismatches']}")
             result = run_e2e(
                 dataset,
                 mode=args.mode,
@@ -449,6 +477,57 @@ def main() -> int:
             print(f"average_recovery_seconds={metrics['average_recovery_seconds']}")
             print(f"output={result['output_dir']}")
         return 0 if result["metrics"]["recovery_success_rate"] == 1.0 else 1
+
+    if args.command == "dataset-validate":
+        dataset = Path(args.dataset or settings.project_dir / "evals" / "e2e" / "dev.jsonl")
+        try:
+            profile = validate_e2e_dataset(dataset)
+        except Exception as exc:
+            print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(profile, ensure_ascii=False, indent=2))
+        else:
+            print(f"valid cases={profile['case_count']} sha256={profile['dataset_sha256']}")
+            print(f"categories={json.dumps(profile['category_counts'], ensure_ascii=False)}")
+            print(f"routes={json.dumps(profile['route_counts'], ensure_ascii=False)}")
+        return 0
+
+    if args.command == "eval-freeze":
+        dataset = Path(args.dataset or settings.project_dir / "evals" / "e2e" / "dev.jsonl")
+        rubric = Path(args.rubric or settings.project_dir / "evals" / "e2e" / "rubric.md")
+        try:
+            lock = freeze_evaluation(dataset, args.output, rubric=rubric, project_dir=settings.project_dir)
+        except Exception as exc:
+            print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(lock, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "eval-verify":
+        result = verify_evaluation_lock(args.lock, project_dir=settings.project_dir)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result["valid"] else 1
+
+    if args.command == "heldout-init":
+        output = Path(args.output or settings.project_dir / "evals" / "private" / "heldout-v1.jsonl")
+        try:
+            target = initialize_heldout(output, args.count)
+        except Exception as exc:
+            print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        print(f"created {target}")
+        print("Fill this file yourself, then run dataset-validate. Do not commit it.")
+        return 0
+
+    if args.command == "review-pack":
+        try:
+            result = create_blinded_review_pack(args.runs, args.output)
+        except Exception as exc:
+            print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
 
     memory_store = MemoryStore()
     if args.memory_command == "add":

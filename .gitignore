@@ -16,3 +16,4 @@ logs/*.log
 traces/*.jsonl
 benchmark_results/*.json
 results/
+evals/private/

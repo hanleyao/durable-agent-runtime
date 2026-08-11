@@ -16,6 +16,7 @@ TASK_MARKERS = (
     "调研", "研究", "生成报告", "写报告", "比较", "评估",
     "research", "report", "benchmark",
 )
+TASK_NEGATIONS = ("不需要调研", "不需要做调研", "无需调研", "不要调研", "不做调研")
 
 
 class ConversationalAgent:
@@ -48,7 +49,9 @@ class ConversationalAgent:
 
     def _route(self, message: str, context: dict[str, Any]) -> dict[str, str]:
         if self.mode == "deterministic":
-            route = "task" if any(marker in message.lower() for marker in TASK_MARKERS) else "direct"
+            lowered = message.lower()
+            explicitly_direct = any(negation in lowered for negation in TASK_NEGATIONS)
+            route = "task" if not explicitly_direct and any(marker in lowered for marker in TASK_MARKERS) else "direct"
             return {"route": route, "standalone_goal": message, "reason": "deterministic heuristic"}
         system = """Route one conversational turn. Return JSON only:
 {"route":"direct|task","standalone_goal":"self-contained request","reason":"short reason"}

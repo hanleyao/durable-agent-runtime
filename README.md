@@ -21,6 +21,16 @@ durable-agent status <job_id>
 
 The conversation acknowledgement, Job record, LangGraph checkpoint and final report are separate durable records. Result delivery is idempotent: retrying a Worker cannot append the same `job_id` report twice.
 
+## Freeze a resume-grade evaluation
+
+The public development set contains 20 cases and is intentionally not eligible for resume metrics. Validate it with:
+
+```powershell
+durable-agent dataset-validate
+```
+
+The private authoring, fingerprint lock, repeated LLM run and blinded human-review workflow is documented in [docs/heldout-protocol.md](docs/heldout-protocol.md). Key commands are `heldout-init`, `eval-freeze`, `eval-verify`, `e2e-run --lock`, and `review-pack`.
+
 这个项目把学习阶段的 Stage 2 与 Stage 3 能力整理为一个统一、可独立上传 GitHub 的工程：LLM 负责语义规划和任务决策，确定性 Runtime 负责 DAG 校验、工具边界、状态机、持久化、后台执行与质量门。
 
 ## 核心能力

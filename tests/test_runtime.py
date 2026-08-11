@@ -14,6 +14,13 @@ from durable_agent.conversation import ConversationStore
 from durable_agent.config import Settings
 from durable_agent.evaluator import EvaluationReport, QualityEvaluator
 from durable_agent.e2e import E2ECase, load_e2e_cases, run_e2e, score_e2e_run
+from durable_agent.eval_protocol import (
+    create_blinded_review_pack,
+    freeze_evaluation,
+    initialize_heldout,
+    validate_e2e_dataset,
+    verify_evaluation_lock,
+)
 from durable_agent.fault import run_fault_trials
 from durable_agent.jobs import JobStore, run_worker
 from durable_agent.memory import MemoryStore
@@ -154,6 +161,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue((task_root / "checkpoints.sqlite").exists())
             self.assertTrue((task_root / "memory.sqlite").exists())
             self.assertTrue((root / "result" / "runs.jsonl").exists())
+            self.assertEqual(["hello"], result["runs"][0]["input_turns"])
 
     def test_conversation_store_persists_full_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -221,6 +229,15 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual("job_demo", result["background_job_id"])
         self.assertEqual("queued", result["task_status"])
         self.assertIn("job_demo", history[-1].content)
+
+    def test_deterministic_router_respects_explicit_no_research_request(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            agent = ConversationalAgent(
+                mode="deterministic",
+                store=ConversationStore(Path(directory) / "conversations.sqlite"),
+            )
+            result = agent.reply("用一句话解释幂等，不需要做调研。", session_id="demo")
+        self.assertEqual("direct", result["route"])
 
     def test_chat_compacts_context_without_deleting_audit_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -413,6 +430,59 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(64, len(fingerprint))
         self.assertTrue(result["gate_passed"])
         self.assertEqual(result["cases"], result["matched"])
+
+    def test_e2e_development_dataset_is_valid_and_profiled(self) -> None:
+        settings = Settings.load()
+        profile = validate_e2e_dataset(settings.project_dir / "evals" / "e2e" / "dev.jsonl")
+        self.assertEqual(20, profile["case_count"])
+        self.assertGreaterEqual(profile["route_counts"]["task"], 12)
+        self.assertGreaterEqual(profile["route_counts"]["direct"], 6)
+
+    def test_evaluation_lock_detects_dataset_change(self) -> None:
+        settings = Settings.load()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset = root / "heldout.jsonl"
+            dataset.write_text(
+                '{"id":"one","category":"direct","turns":["hello"],'
+                '"expected":{"routes":["direct"]},"human_review":["relevant"]}\n',
+                encoding="utf-8",
+            )
+            lock_path = root / "freeze.json"
+            freeze_evaluation(
+                dataset,
+                lock_path,
+                rubric=settings.project_dir / "evals" / "e2e" / "rubric.md",
+                project_dir=settings.project_dir,
+            )
+            self.assertTrue(verify_evaluation_lock(lock_path, project_dir=settings.project_dir)["valid"])
+            dataset.write_text(dataset.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            verification = verify_evaluation_lock(lock_path, project_dir=settings.project_dir)
+        self.assertFalse(verification["valid"])
+        self.assertIn("dataset_sha256", verification["mismatches"])
+
+    def test_heldout_template_and_blinded_review_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = initialize_heldout(root / "heldout.jsonl", count=3)
+            self.assertEqual(3, len(template.read_text(encoding="utf-8").splitlines()))
+            with self.assertRaises(FileExistsError):
+                initialize_heldout(template, count=3)
+            runs = root / "runs.jsonl"
+            runs.write_text(json.dumps({
+                "case_id": "one", "repeat": 1,
+                "turns": [{
+                    "standalone_goal": "research checkpoints", "answer": "answer",
+                    "evaluation": {"action": "pass", "overall_score": 0.99},
+                }],
+                "score": {"human_review": ["factually correct"]},
+            }) + "\n", encoding="utf-8")
+            output = root / "review.jsonl"
+            create_blinded_review_pack(runs, output)
+            review = json.loads(output.read_text(encoding="utf-8"))
+        self.assertNotIn("evaluation", review)
+        self.assertIsNone(review["accepted"])
+        self.assertEqual(["factually correct"], review["review_criteria"])
 
 
 if __name__ == "__main__":
