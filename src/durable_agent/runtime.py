@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+import time
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -11,6 +13,7 @@ from durable_agent.agent import TaskAgent
 from durable_agent.config import Settings
 from durable_agent.evaluator import QualityEvaluator
 from durable_agent.llm import OpenAICompatibleClient
+from durable_agent.memory import MemoryStore
 from durable_agent.models import RuntimeState, Task
 from durable_agent.persistence import open_checkpointer
 from durable_agent.planner import Planner
@@ -37,8 +40,19 @@ def build_graph(
     *,
     checkpointer: Any | None = None,
     progress: Progress | None = None,
+    pause_before_node: str | None = None,
+    pause_seconds: float = 0.0,
 ):
+    def pause(node: str) -> None:
+        if pause_before_node != node:
+            return
+        trace.event("fault_window", node=node, pause_seconds=pause_seconds)
+        if progress:
+            progress(f"[fault-window] before={node} seconds={pause_seconds}")
+        time.sleep(max(0.0, pause_seconds))
+
     def plan_node(state: RuntimeState) -> RuntimeState:
+        pause("plan")
         if state.get("tasks"):
             return {"phase": "planning"}
         tasks, repairs, reasoning = planner.plan(state["goal"])
@@ -52,6 +66,7 @@ def build_graph(
         }
 
     def schedule_node(state: RuntimeState) -> RuntimeState:
+        pause("schedule")
         tasks = state["tasks"]
         for task in tasks.values():
             if task.status not in {"pending", "ready"}:
@@ -90,12 +105,14 @@ def build_graph(
         return "evaluate" if state.get("phase") == "evaluating" else "finalize"
 
     def execute_node(state: RuntimeState) -> RuntimeState:
+        pause("execute")
         task = state["tasks"][state["current_task_id"]]
         result = agent.execute(state["goal"], task, completed_results(state["tasks"]))
         trace.event("task_executed", task_id=task.id, ok=result.get("ok"), error=result.get("error"))
         return {"execution_result": result}
 
     def handle_node(state: RuntimeState) -> RuntimeState:
+        pause("handle")
         task = state["tasks"][state["current_task_id"]]
         execution = state.get("execution_result", {})
         if execution.get("ok"):
@@ -122,6 +139,7 @@ def build_graph(
         }
 
     def evaluate_node(state: RuntimeState) -> RuntimeState:
+        pause("evaluate")
         tasks = state["tasks"]
         results = completed_results(tasks)
         report_result = next(
@@ -164,6 +182,7 @@ def build_graph(
         return "repair"
 
     def repair_node(state: RuntimeState) -> RuntimeState:
+        pause("repair")
         tasks = state["tasks"]
         action = state["evaluation"]["action"]
         instruction = state["evaluation"].get("revision_instruction", "")
@@ -183,6 +202,7 @@ def build_graph(
         return {"tasks": tasks, "phase": "running", "current_task_id": ""}
 
     def finalize_node(state: RuntimeState) -> RuntimeState:
+        pause("finalize")
         evaluation = state.get("evaluation", {})
         phase = "done" if evaluation.get("passed") else "failed"
         tasks = state.get("tasks", {})
@@ -233,9 +253,17 @@ def run_agent(
     max_steps: int = 4,
     max_evaluations: int = 3,
     evaluator_mode: str = "rules",
+    memory_db: str | Path | None = None,
+    trace_dir: str | Path | None = None,
+    pause_before_node: str | None = None,
+    pause_seconds: float = 0.0,
     progress: Progress | None = None,
 ) -> dict[str, Any]:
     settings = Settings.load()
+    if trace_dir is not None:
+        active_trace_dir = Path(trace_dir).resolve()
+        active_trace_dir.mkdir(parents=True, exist_ok=True)
+        settings = replace(settings, trace_dir=active_trace_dir)
     active_thread = thread_id or f"run_{uuid4().hex[:10]}"
     if continue_run and not thread_id:
         raise ValueError("--continue requires --thread-id.")
@@ -243,11 +271,27 @@ def run_agent(
         raise ValueError("A goal is required for a new run.")
     checkpointer, connection = open_checkpointer(checkpoint_db or settings.checkpoint_db)
     trace = TraceLogger(active_thread, settings)
-    planner = Planner(mode)
-    agent = TaskAgent(mode, max_steps=max_steps, progress=progress)
-    judge_client = OpenAICompatibleClient(settings) if evaluator_mode == "hybrid" else None
+    client = OpenAICompatibleClient(settings)
+    planner = Planner(mode, client=client)
+    agent = TaskAgent(
+        mode,
+        client=client,
+        memory=MemoryStore(memory_db or settings.memory_db),
+        max_steps=max_steps,
+        progress=progress,
+    )
+    judge_client = client if evaluator_mode == "hybrid" else None
     quality_evaluator = QualityEvaluator(judge_call=judge_client.complete_json if judge_client else None)
-    graph = build_graph(planner, agent, quality_evaluator, trace, checkpointer=checkpointer, progress=progress)
+    graph = build_graph(
+        planner,
+        agent,
+        quality_evaluator,
+        trace,
+        checkpointer=checkpointer,
+        progress=progress,
+        pause_before_node=pause_before_node,
+        pause_seconds=pause_seconds,
+    )
     config = {"configurable": {"thread_id": active_thread}}
     try:
         if continue_run:
@@ -278,6 +322,7 @@ def run_agent(
             "phase": result.get("phase"),
             "output": output,
             "evaluation": result.get("evaluation", {}),
+            "evaluation_count": result.get("evaluation_count", 0),
             "tasks": {task_id: task.to_dict() for task_id, task in result.get("tasks", {}).items()},
             "trace_path": str(trace.path),
         }

@@ -22,3 +22,17 @@ Never report the visible regression-set score as real-world accuracy.
 ## End-to-end metrics
 
 For the full Agent, report task completion rate, first-pass rate, recovery success, replan success, final human acceptance, average wall time and model calls. Keep process success separate from human quality acceptance.
+
+## Reproducible runner
+
+`durable-agent e2e-run` executes each case with isolated conversation, memory and checkpoint databases. A run records the Agent commit, dataset SHA256, execution mode, per-turn routes, final workflow state, evidence count, evaluation action, duration and every rubric check.
+
+The visible 12-case set is a runner-development and CI set. A final resume metric must come from a separately authored and sealed held-out set after the Agent, prompts, evaluator and rubric have been frozen.
+
+## Baselines
+
+The comparison runner keeps retrieval evidence constant. `single_pass` removes planning, the DAG and quality repair; `no_quality_loop` retains task execution but permits only one evaluation; `full` uses the complete runtime. This makes differences more attributable than comparing against a deliberately evidence-free prompt.
+
+## Fault injection
+
+The fault harness starts a real child process, waits for a traceable node boundary, forcefully kills that process and resumes the same LangGraph thread from the same SQLite checkpoint. Recovery requires a final accepted result and zero redispatches of tasks completed before the fault window. Process exit alone is not recovery.

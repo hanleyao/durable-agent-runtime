@@ -1,0 +1,6 @@
+{"id":"checkpoint_recovery","goal":"Research durable Agent checkpoint recovery and generate a report."}
+{"id":"persistence_comparison","goal":"Compare workflow checkpoint persistence with background Job Store persistence and generate a report."}
+{"id":"background_lifecycle","goal":"Research background Agent jobs, heartbeat, lease and stale-worker recovery, then generate a report."}
+{"id":"quality_gate","goal":"Research Agent quality gates, critical failures, revise and replan, then generate a report."}
+{"id":"citation_integrity","goal":"Research citation integrity and unknown citations in Agent reports, then generate a report."}
+{"id":"multi_topic_zh","goal":"调研 Agent 持久化、后台任务和质量评估，并生成报告。"}

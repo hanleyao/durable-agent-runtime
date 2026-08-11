@@ -1,0 +1,10 @@
+{
+  "name": "durable-agent-fault-development",
+  "version": "0.1.0",
+  "role": "development",
+  "workloads": 6,
+  "recommended_points": ["schedule", "execute", "handle", "evaluate", "finalize"],
+  "recommended_repeats": 2,
+  "recommended_trials": 60,
+  "final_metric_eligible": false
+}

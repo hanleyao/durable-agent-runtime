@@ -19,6 +19,7 @@ A persistent conversational Agent with a durable, dependency-aware and evaluatio
 - 质量闭环：`pass / revise / replan / abort` 驱动 Graph 后续动作。
 - 引用契约：多条 research 分支汇总时统一去重、重新编号；未知引用在 Agent Loop 内被拒绝并要求重写。
 - 固定评测集：版本、指纹、四分类指标、混淆矩阵和 CI quality gate。
+- 端到端评测：隔离 Conversation、Memory、Checkpoint 与 Trace，记录任务完成率、路由、首次通过率和引用合法率。
 - 可观察性：控制台紧凑进度，完整事件写入 JSONL trace。
 
 ## 架构
@@ -126,6 +127,9 @@ logs       查看有限行日志尾部
 recover    回收 lease 过期的任务
 evaluate   独立评估一个 JSON 输出
 benchmark  运行版本化固定评测集
+e2e-run    运行隔离的端到端 Agent 开发评测集
+e2e-compare 对比 single-pass、无质量闭环与完整 Agent
+fault-test 强杀子进程并验证同一 checkpoint thread 恢复
 memory     添加或检索长期记忆
 ```
 
@@ -231,6 +235,64 @@ durable-agent benchmark --output benchmark_results/latest.json
 
 后续人工评测建议：冻结当前规则，另建未参与调参的 private held-out labels，再报告 pass precision、action macro-F1、critical issue recall 和 bootstrap 置信区间。
 
+## 端到端 Agent 评测
+
+运行12条可见开发任务：
+
+```powershell
+durable-agent e2e-run --mode deterministic
+```
+
+运行真实 LLM，并对每条任务重复三次：
+
+```powershell
+durable-agent e2e-run `
+  --mode llm `
+  --repeats 3 `
+  --output results/e2e/dev-llm-v1
+```
+
+只运行指定 case：
+
+```powershell
+durable-agent e2e-run --mode llm --case research_001
+```
+
+每个 case 使用独立的 Conversation、Memory、Checkpoint 和 Trace 数据，防止跨 case 污染。结果目录包含 `manifest.json`、`metrics.json`、`runs.jsonl`、`report.md` 和每次运行的 SQLite/trace 审计材料。
+
+`evals/e2e/dev.jsonl` 是参与开发的公开回归集，其分数不能作为 held-out 准确率或简历最终指标。简历指标需要在冻结代码和评分规则之后，使用另一套未参与调优的人工 sealed held-out 集产生。
+
+对比三种执行变体：
+
+```powershell
+durable-agent e2e-compare --mode llm --repeats 3
+```
+
+- `single_pass`：相同本地证据，一次生成，无 Planner、DAG 和质量修订。
+- `no_quality_loop`：完整任务执行，但 Evaluator 只测一次，不能 revise/replan。
+- `full`：完整 Planner、Task Runtime 和质量闭环。
+
+## 故障注入与恢复评测
+
+```powershell
+durable-agent fault-test --mode deterministic
+```
+
+该命令在已持久化边界后的 `execute`、`handle`、`evaluate` 和 `finalize` 节点前打开故障窗口，由父进程强制终止 Agent，再使用同一 `thread_id` 和 checkpoint 数据库恢复。只有最终 `pass` 且中断前已完成任务没有被重新调度，才计为恢复成功。
+
+扩大重复次数：
+
+```powershell
+durable-agent fault-test `
+  --dataset evals/fault/cases.jsonl `
+  --point schedule --point execute --point handle --point evaluate --point finalize `
+  --repeats 2
+```
+
+上面的冻结配置是6个 workload × 5个 checkpoint 边界 × 2次重复，共60次故障注入。
+
+开发 smoke 的恢复率不能直接写入简历。最终指标应使用冻结版本、多个任务、多个中断位置和预先确定的重复次数，保存完整 `fault-results.json` 与 trace。
+
 ## 长期记忆
 
 ```powershell
@@ -262,6 +324,9 @@ durable-agent-runtime/
 │   ├── cli.py            # unified command entry
 │   ├── conversation.py   # SQLite sessions and complete message history
 │   ├── evaluator.py      # deterministic six-dimension quality gate
+│   ├── e2e.py            # isolated end-to-end runner, scorer and report
+│   ├── baseline.py       # comparable single-pass baseline
+│   ├── fault.py          # process-kill fault injection and recovery metrics
 │   ├── jobs.py           # durable background jobs
 │   ├── llm.py            # OpenAI-compatible DeepSeek client
 │   ├── memory.py         # SQLite long-term memory
@@ -275,6 +340,7 @@ durable-agent-runtime/
 │   ├── eval_set/
 │   └── sources/
 ├── tests/
+├── evals/e2e/            # visible development tasks and rubric
 ├── .env.example
 └── pyproject.toml
 ```

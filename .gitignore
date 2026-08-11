@@ -14,3 +14,4 @@ data/*.sqlite-*
 logs/*.log
 traces/*.jsonl
 benchmark_results/*.json
+results/

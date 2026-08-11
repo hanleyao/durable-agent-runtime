@@ -11,6 +11,8 @@ from durable_agent.benchmark import load_cases, run_benchmark
 from durable_agent.chat import ConversationalAgent
 from durable_agent.conversation import ConversationStore
 from durable_agent.evaluator import QualityEvaluator
+from durable_agent.e2e import E2ECase, load_e2e_cases, run_e2e, score_e2e_run
+from durable_agent.fault import run_fault_trials
 from durable_agent.jobs import JobStore
 from durable_agent.memory import MemoryStore
 from durable_agent.models import Task
@@ -20,6 +22,67 @@ from durable_agent.runtime import run_agent
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_fault_injection_kills_and_recovers_same_thread(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            result = run_fault_trials(
+                "research checkpoint recovery and generate a report",
+                points=["execute"],
+                mode="deterministic",
+                output_dir=Path(directory) / "fault",
+                window_seconds=2,
+                wait_timeout=8,
+            )
+        trial = result["trials"][0]
+        self.assertTrue(trial["fault_window_observed"])
+        self.assertTrue(trial["process_killed"])
+        self.assertTrue(trial["recovered"])
+        self.assertEqual([], trial["duplicate_completed_tasks"])
+
+    def test_e2e_scorer_requires_routes_topics_and_valid_citations(self) -> None:
+        case = E2ECase(
+            "case", "research", ["research"],
+            {
+                "routes": ["task"], "final_status": "done", "allowed_actions": ["pass"],
+                "required_topics": ["checkpoint"], "citation_required": True, "minimum_evidence": 1,
+            },
+            [],
+        )
+        score = score_e2e_run(case, [{
+            "route": "task", "task_status": "done", "answer": "Checkpoint recovery [1].",
+            "evaluation": {"action": "pass", "hard_failures": []},
+            "runtime_metrics": {"evidence_count": 1},
+        }])
+        self.assertTrue(score["passed"])
+
+    def test_e2e_dataset_rejects_duplicate_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = Path(directory) / "cases.jsonl"
+            dataset.write_text(
+                '{"id":"same","turns":["one"]}\n{"id":"same","turns":["two"]}\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                load_e2e_cases(dataset)
+
+    def test_e2e_runner_isolates_state_and_writes_reproducible_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset = root / "cases.jsonl"
+            dataset.write_text(
+                '{"id":"direct","category":"chat","turns":["hello"],"expected":{"routes":["direct"]}}\n'
+                '{"id":"task","category":"research","turns":["research checkpoint and generate report"],'
+                '"expected":{"routes":["task"],"final_status":"done","allowed_actions":["pass"],'
+                '"required_topics":["checkpoint"],"citation_required":true,"minimum_evidence":1}}\n',
+                encoding="utf-8",
+            )
+            result = run_e2e(dataset, mode="deterministic", output_dir=root / "result")
+            task_root = root / "result" / "artifacts" / "task" / "1"
+            self.assertEqual(1.0, result["metrics"]["end_to_end_pass_rate"])
+            self.assertTrue((task_root / "conversations.sqlite").exists())
+            self.assertTrue((task_root / "checkpoints.sqlite").exists())
+            self.assertTrue((task_root / "memory.sqlite").exists())
+            self.assertTrue((root / "result" / "runs.jsonl").exists())
+
     def test_conversation_store_persists_full_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "conversations.sqlite"

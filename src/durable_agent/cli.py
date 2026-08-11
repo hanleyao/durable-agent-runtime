@@ -11,6 +11,8 @@ from durable_agent.chat import ConversationalAgent, format_history
 from durable_agent.config import Settings
 from durable_agent.conversation import ConversationStore
 from durable_agent.evaluator import QualityEvaluator
+from durable_agent.e2e import compare_e2e, run_e2e
+from durable_agent.fault import DEFAULT_POINTS, load_fault_cases, run_fault_trials
 from durable_agent.jobs import Job, JobStore, launch_worker, run_worker, tail
 from durable_agent.memory import MemoryStore
 from durable_agent.runtime import run_agent
@@ -51,6 +53,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--evaluator", choices=["rules", "hybrid"], default="rules")
     run.add_argument("--quiet", action="store_true")
     run.add_argument("--json", action="store_true")
+    run.add_argument("--memory-db", help=argparse.SUPPRESS)
+    run.add_argument("--trace-dir", help=argparse.SUPPRESS)
+    run.add_argument("--pause-before-node", choices=["plan", "schedule", "execute", "handle", "evaluate", "repair", "finalize"], help=argparse.SUPPRESS)
+    run.add_argument("--pause-seconds", type=float, default=0.0, help=argparse.SUPPRESS)
 
     resume = sub.add_parser("resume", help="Continue a persisted runtime thread")
     resume.add_argument("thread_id")
@@ -96,6 +102,40 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark = sub.add_parser("benchmark", help="Run the fixed Evaluator regression set")
     benchmark.add_argument("--json", action="store_true")
     benchmark.add_argument("--output")
+
+    e2e = sub.add_parser("e2e-run", help="Run an isolated end-to-end Agent evaluation set")
+    e2e.add_argument("--dataset")
+    e2e.add_argument("--mode", choices=["llm", "deterministic"], default="deterministic")
+    e2e.add_argument("--variant", choices=["full", "single_pass", "no_quality_loop"], default="full")
+    e2e.add_argument("--repeats", type=int, default=1)
+    e2e.add_argument("--case", action="append", dest="cases")
+    e2e.add_argument("--limit", type=int)
+    e2e.add_argument("--output")
+    e2e.add_argument("--min-pass-rate", type=float, default=1.0)
+    e2e.add_argument("--quiet", action="store_true")
+    e2e.add_argument("--json", action="store_true")
+
+    comparison = sub.add_parser("e2e-compare", help="Compare single-pass, no-quality-loop and full Agent variants")
+    comparison.add_argument("--dataset")
+    comparison.add_argument("--mode", choices=["llm", "deterministic"], default="deterministic")
+    comparison.add_argument("--repeats", type=int, default=1)
+    comparison.add_argument("--case", action="append", dest="cases")
+    comparison.add_argument("--limit", type=int)
+    comparison.add_argument("--output")
+    comparison.add_argument("--quiet", action="store_true")
+    comparison.add_argument("--json", action="store_true")
+
+    fault = sub.add_parser("fault-test", help="Kill Agent processes at checkpointed boundaries and verify recovery")
+    fault.add_argument("--goal", default="research durable Agent checkpoint recovery and generate a report")
+    fault.add_argument("--dataset")
+    fault.add_argument("--point", action="append", choices=["schedule", "execute", "handle", "evaluate", "repair", "finalize"])
+    fault.add_argument("--repeats", type=int, default=1)
+    fault.add_argument("--mode", choices=["llm", "deterministic"], default="deterministic")
+    fault.add_argument("--output")
+    fault.add_argument("--window-seconds", type=float, default=20.0)
+    fault.add_argument("--wait-timeout", type=float, default=30.0)
+    fault.add_argument("--quiet", action="store_true")
+    fault.add_argument("--json", action="store_true")
 
     memory = sub.add_parser("memory", help="Add or search long-term memory")
     memory_sub = memory.add_subparsers(dest="memory_command", required=True)
@@ -182,6 +222,10 @@ def main() -> int:
                 max_steps=4 if is_resume else args.max_steps,
                 max_evaluations=3 if is_resume else args.max_evaluations,
                 evaluator_mode=args.evaluator,
+                memory_db=None if is_resume else args.memory_db,
+                trace_dir=None if is_resume else args.trace_dir,
+                pause_before_node=None if is_resume else args.pause_before_node,
+                pause_seconds=0.0 if is_resume else args.pause_seconds,
                 progress=progress,
             )
         except Exception as exc:
@@ -285,6 +329,98 @@ def main() -> int:
             print(f"cases={result['cases']} action_accuracy={result['metrics']['action_accuracy']:.1%} macro_f1={result['metrics']['macro_f1']:.3f}")
             print(f"quality_gate={'PASS' if result['gate_passed'] else 'FAIL'}")
         return 0 if result["gate_passed"] else 1
+
+    if args.command == "e2e-run":
+        dataset = Path(args.dataset or settings.project_dir / "evals" / "e2e" / "dev.jsonl")
+        progress = None if args.quiet else lambda message: print(message, flush=True)
+        try:
+            result = run_e2e(
+                dataset,
+                mode=args.mode,
+                variant=args.variant,
+                repeats=max(1, args.repeats),
+                output_dir=args.output,
+                case_ids=set(args.cases or []),
+                limit=args.limit,
+                progress=progress,
+            )
+        except Exception as exc:
+            print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        metrics = result["metrics"]
+        if args.json:
+            print(json.dumps({"manifest": result["manifest"], "metrics": metrics, "output_dir": result["output_dir"]}, ensure_ascii=False, indent=2))
+        else:
+            print("\nE2E EVALUATION")
+            print(f"cases={metrics['cases']} runs={metrics['runs']} mode={result['manifest']['mode']} variant={result['manifest']['variant']}")
+            print(f"end_to_end_pass_rate={metrics['end_to_end_pass_rate']:.1%}")
+            print(f"task_completion_rate={metrics['task_completion_rate']:.1%}")
+            print(f"route_accuracy={metrics['route_accuracy']:.1%}")
+            print(f"first_pass_rate={metrics['first_pass_rate']:.1%}")
+            print(f"citation_validity_rate={metrics['citation_validity_rate']:.1%}")
+            print(f"stable_case_rate={metrics['stable_case_rate']:.1%}")
+            print(f"output={result['output_dir']}")
+        return 0 if metrics["end_to_end_pass_rate"] >= max(0.0, min(1.0, args.min_pass_rate)) else 1
+
+    if args.command == "e2e-compare":
+        dataset = Path(args.dataset or settings.project_dir / "evals" / "e2e" / "dev.jsonl")
+        progress = None if args.quiet else lambda message: print(message, flush=True)
+        try:
+            result = compare_e2e(
+                dataset,
+                mode=args.mode,
+                repeats=max(1, args.repeats),
+                output_dir=args.output,
+                case_ids=set(args.cases or []),
+                limit=args.limit,
+                progress=progress,
+            )
+        except Exception as exc:
+            print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print("\nAGENT VARIANT COMPARISON")
+            for variant, metrics in result["metrics"].items():
+                print(
+                    f"{variant:<16} e2e={metrics['end_to_end_pass_rate']:.1%} "
+                    f"task={metrics['task_completion_rate']:.1%} "
+                    f"citation={metrics['citation_validity_rate']:.1%} "
+                    f"duration={metrics['average_duration_seconds']:.2f}s"
+                )
+            print(f"output={result['output_dir']}")
+        return 0
+
+    if args.command == "fault-test":
+        progress = None if args.quiet else lambda message: print(message, flush=True)
+        try:
+            workloads = load_fault_cases(args.dataset) if args.dataset else None
+            result = run_fault_trials(
+                args.goal,
+                cases=workloads,
+                points=args.point or list(DEFAULT_POINTS),
+                repeats=max(1, args.repeats),
+                mode=args.mode,
+                output_dir=args.output,
+                window_seconds=max(1.0, args.window_seconds),
+                wait_timeout=max(1.0, args.wait_timeout),
+                progress=progress,
+            )
+        except Exception as exc:
+            print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            metrics = result["metrics"]
+            print("\nFAULT INJECTION")
+            print(f"trials={metrics['trials']} recovered={metrics['recovered']}")
+            print(f"recovery_success_rate={metrics['recovery_success_rate']:.1%}")
+            print(f"duplicate_execution_rate={metrics['duplicate_execution_rate']:.1%}")
+            print(f"average_recovery_seconds={metrics['average_recovery_seconds']}")
+            print(f"output={result['output_dir']}")
+        return 0 if result["metrics"]["recovery_success_rate"] == 1.0 else 1
 
     memory_store = MemoryStore()
     if args.memory_command == "add":
