@@ -11,8 +11,11 @@ from durable_agent.config import Settings
 def tokens(text: str) -> set[str]:
     lowered = text.lower()
     words = set(re.findall(r"[a-z0-9_+-]{2,}", lowered))
-    cjk = "".join(re.findall(r"[\u4e00-\u9fff]", lowered))
-    words.update(cjk[index : index + 2] for index in range(max(0, len(cjk) - 1)))
+    for sequence in re.findall(r"[\u4e00-\u9fff]+", lowered):
+        if len(sequence) == 1:
+            words.add(sequence)
+        else:
+            words.update(sequence[index : index + 2] for index in range(len(sequence) - 1))
     return words
 
 
@@ -46,7 +49,7 @@ class LocalRetriever:
         query_tokens = tokens(query)
         scored = []
         for chunk in self.load():
-            chunk_tokens = tokens(chunk.text)
+            chunk_tokens = tokens(f"{chunk.title} {chunk.text}")
             score = len(query_tokens & chunk_tokens) / max(1, len(query_tokens))
             if score:
                 scored.append((score, chunk))

@@ -31,6 +31,18 @@ durable-agent dataset-validate
 
 The private authoring, fingerprint lock, repeated LLM run and blinded human-review workflow is documented in [docs/heldout-protocol.md](docs/heldout-protocol.md). Key commands are `heldout-init`, `eval-freeze`, `eval-verify`, `e2e-run --lock`, and `review-pack`.
 
+## Local knowledge base
+
+The bilingual, citation-ready local RAG knowledge base contains 17 Markdown documents and 67 retrievable chunks covering persistence, idempotency, background Jobs, planning, replanning, Graph boundaries, context, memory, tools, evaluation, citations, observability, fault injection, benchmarking, and the current limits around subagents and multi-agent systems.
+
+```powershell
+durable-agent knowledge list
+durable-agent knowledge search "checkpoint 和后台任务有什么区别"
+durable-agent knowledge search "revise replan abort" --json
+```
+
+Research tasks are expected to stay within this evidence boundary. Direct conversation is not required to cite the local knowledge base.
+
 这个项目把学习阶段的 Stage 2 与 Stage 3 能力整理为一个统一、可独立上传 GitHub 的工程：LLM 负责语义规划和任务决策，确定性 Runtime 负责 DAG 校验、工具边界、状态机、持久化、后台执行与质量门。
 
 ## 核心能力

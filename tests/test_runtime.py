@@ -259,6 +259,23 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual("[1]", matches[0]["citation_id"])
         self.assertTrue(matches[0]["text"])
 
+    def test_knowledge_base_covers_core_runtime_topics(self) -> None:
+        retriever = LocalRetriever()
+        chunks = retriever.load()
+        self.assertGreaterEqual(len({Path(chunk.source).name for chunk in chunks}), 17)
+        self.assertGreaterEqual(len(chunks), 67)
+        expectations = {
+            "dynamic replanning completed task reuse": "dynamic_replanning#",
+            "conversation session context memory": "conversation_context_memory#",
+            "citation integrity unknown citations": "citation_integrity#",
+            "subagent multi-agent coordination": "subagents_and_multi_agent#",
+            "上下文 会话 长期记忆 检查点的区别": "conversation_context_memory#",
+            "后台任务 心跳 租约 失联恢复": "background_jobs#",
+        }
+        for query, prefix in expectations.items():
+            matches = retriever.search(query, top_k=3)
+            self.assertTrue(any(item["chunk_id"].startswith(prefix) for item in matches), query)
+
     def test_report_rejects_unknown_citation_and_uses_global_namespace(self) -> None:
         class Client:
             def __init__(self) -> None:
@@ -449,11 +466,15 @@ class RuntimeTests(unittest.TestCase):
                 encoding="utf-8",
             )
             lock_path = root / "freeze.json"
-            freeze_evaluation(
+            lock = freeze_evaluation(
                 dataset,
                 lock_path,
                 rubric=settings.project_dir / "evals" / "e2e" / "rubric.md",
                 project_dir=settings.project_dir,
+            )
+            self.assertIn(
+                "src/durable_agent/sources/checkpoint_recovery.md",
+                lock["critical_code_sha256"],
             )
             self.assertTrue(verify_evaluation_lock(lock_path, project_dir=settings.project_dir)["valid"])
             dataset.write_text(dataset.read_text(encoding="utf-8") + "\n", encoding="utf-8")

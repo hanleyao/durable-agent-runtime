@@ -22,6 +22,7 @@ from durable_agent.eval_protocol import (
 from durable_agent.fault import DEFAULT_POINTS, load_fault_cases, run_fault_trials
 from durable_agent.jobs import Job, JobStore, launch_worker, run_worker, tail
 from durable_agent.memory import MemoryStore
+from durable_agent.rag import LocalRetriever
 from durable_agent.runtime import run_agent
 
 
@@ -173,6 +174,14 @@ def build_parser() -> argparse.ArgumentParser:
     search = memory_sub.add_parser("search")
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=5)
+
+    knowledge = sub.add_parser("knowledge", help="Inspect or search the local evidence knowledge base")
+    knowledge_sub = knowledge.add_subparsers(dest="knowledge_command", required=True)
+    knowledge_sub.add_parser("list")
+    knowledge_search = knowledge_sub.add_parser("search")
+    knowledge_search.add_argument("query")
+    knowledge_search.add_argument("--limit", type=int, default=5)
+    knowledge_search.add_argument("--json", action="store_true")
     return parser
 
 
@@ -527,6 +536,27 @@ def main() -> int:
             print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 2
         print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "knowledge":
+        retriever = LocalRetriever()
+        if args.knowledge_command == "list":
+            grouped: dict[str, dict[str, object]] = {}
+            for chunk in retriever.load():
+                filename = Path(chunk.source).name
+                item = grouped.setdefault(filename, {"title": chunk.title, "chunks": 0})
+                item["chunks"] = int(item["chunks"]) + 1
+            for filename, item in grouped.items():
+                print(f"{filename:<36} chunks={item['chunks']:<2}  {item['title']}")
+            print(f"files={len(grouped)} chunks={sum(int(item['chunks']) for item in grouped.values())}")
+            return 0
+        matches = retriever.search(args.query, args.limit)
+        if args.json:
+            print(json.dumps(matches, ensure_ascii=False, indent=2))
+        else:
+            for item in matches:
+                print(f"{item['citation_id']} {item['chunk_id']} score={item['score']:.4f} {item['title']}")
+                print(f"    {item['text']}")
         return 0
 
     memory_store = MemoryStore()
