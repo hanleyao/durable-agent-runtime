@@ -33,7 +33,7 @@ The private authoring, fingerprint lock, repeated LLM run and blinded human-revi
 
 ## Local knowledge base
 
-The bilingual, citation-ready local RAG knowledge base contains 17 Markdown documents and 67 retrievable chunks covering persistence, idempotency, background Jobs, planning, replanning, Graph boundaries, context, memory, tools, evaluation, citations, observability, fault injection, benchmarking, and the current limits around subagents and multi-agent systems.
+The bilingual, citation-ready local RAG knowledge base contains 18 Markdown documents and 71 retrievable chunks covering persistence, idempotency, background Jobs, planning, replanning, Graph boundaries, context, memory, tools, evaluation, citations, observability, fault injection, benchmarking, LangChain versus LangGraph, and the current limits around subagents and multi-agent systems.
 
 ```powershell
 durable-agent knowledge list

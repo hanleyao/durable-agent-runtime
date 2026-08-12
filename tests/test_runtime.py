@@ -269,6 +269,7 @@ class RuntimeTests(unittest.TestCase):
             "conversation session context memory": "conversation_context_memory#",
             "citation integrity unknown citations": "citation_integrity#",
             "subagent multi-agent coordination": "subagents_and_multi_agent#",
+            "LangChain LangGraph abstraction orchestration": "langchain_vs_langgraph#",
             "上下文 会话 长期记忆 检查点的区别": "conversation_context_memory#",
             "后台任务 心跳 租约 失联恢复": "background_jobs#",
         }
