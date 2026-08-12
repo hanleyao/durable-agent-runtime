@@ -1,6 +1,6 @@
 # LLM Planner and Task DAG Validation
 
-LLM Planner 把自然语言目标拆成带依赖的 research、analysis 和 report 任务，但计划只是提案。程序必须修复非法 ID、未知依赖、类型错误和环，再把安全 DAG 交给调度器执行。
+Task System 负责决定执行什么任务以及何时执行：LLM Planner 把自然语言目标拆成带依赖的 research、analysis 和 report 任务，但计划只是提案。程序必须修复非法 ID、未知依赖、类型错误和环，再把安全 Task DAG 交给调度器执行。它与任务内部的 Subgraph 或 Agent Loop 协同，使顶层调度和内部流程保持分离。
 
 The Planner translates a natural-language goal into typed tasks such as `research`, `analysis`, and `report`, with `blocked_by` dependencies. The LLM is a proposal generator: it chooses a useful semantic decomposition, but its output is not trusted as executable structure.
 
