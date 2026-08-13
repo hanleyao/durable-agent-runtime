@@ -39,6 +39,8 @@ The bilingual, citation-ready local RAG knowledge base contains 18 Markdown docu
 durable-agent knowledge list
 durable-agent knowledge search "checkpoint 和后台任务有什么区别"
 durable-agent knowledge search "revise replan abort" --json
+durable-agent rag-dataset-validate --dataset evals/rag/dev.jsonl
+durable-agent rag-eval --dataset evals/rag/dev.jsonl --output results/rag/dev
 ```
 
 The conversational router has three paths: `chat` for ordinary dialogue, `knowledge` for lightweight evidence-grounded answers, and `task` for Planner/DAG execution. Knowledge retrieval combines sparse hashing vectors with lexical candidates, reciprocal-rank fusion and metadata-aware reranking. It exposes retrieval confidence, cites the chunks actually used, rewrites contextual follow-ups, and degrades safely when evidence or the model endpoint is unavailable. Research tasks use the same evidence boundary inside the full task runtime.

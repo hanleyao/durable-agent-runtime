@@ -117,7 +117,7 @@ class LocalRetriever:
             "related": ["worker", "retry", "checkpoint"],
         },
         "langchain_vs_langgraph": {
-            "aliases": ["LangChain", "LangGraph", "链和图", "framework comparison"],
+            "aliases": ["LangChain", "LangGraph", "链和图", "framework comparison", "library integrations", "stateful orchestration"],
             "domains": ["Agent framework"],
             "related": ["orchestration", "StateGraph", "agent tools"],
         },

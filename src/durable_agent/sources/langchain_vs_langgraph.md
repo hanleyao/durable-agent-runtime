@@ -1,6 +1,6 @@
 ---
 title: LangChain and LangGraph
-aliases: [LangChain, LangGraph, 链和图, framework comparison]
+aliases: [LangChain, LangGraph, 链和图, framework comparison, library integrations, stateful orchestration]
 domains: [Agent framework]
 related: [orchestration, StateGraph, agent tools]
 confusable_with: [competing replacements]
