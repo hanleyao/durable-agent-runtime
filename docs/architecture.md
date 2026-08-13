@@ -16,13 +16,17 @@ Mixing these stores makes recovery ambiguous. A background Job may still be runn
 
 A conversation `session_id` is stable across turns. Every multi-step task created by that conversation receives a new LangGraph `thread_id`, so a terminal workflow never blocks the next turn. The session stores the resulting report and run ID as an assistant message.
 
-With `chat --background`, the router still decides between `direct` and `task`, but a task route is persisted in the Job Store instead of blocking the chat process. The acknowledgement is written immediately. The Worker runs the same checkpointed Runtime in a child process and, after a successful evaluation, writes the final report back to the originating `session_id`.
+With `chat --background`, the router still sends only a `task` route to the Job Store instead of blocking the chat process. The acknowledgement is written immediately. The Worker runs the same checkpointed Runtime in a child process and, after a successful evaluation, writes the final report back to the originating `session_id`.
 
 Background delivery uses `job:<job_id>` as a unique message source. If a Worker crashes after inserting the report but before marking the Job terminal, recovery can repeat delivery safely: the Conversation Store returns the existing message instead of creating a duplicate. `delivered_at` and the `conversation_delivered` event provide an audit trail.
 
 The full transcript is retained for audit. The active model context contains only a rolling summary plus recent messages. Summaries preserve goals, decisions, constraints, unresolved questions and task outcomes while dropping greetings, repetition and verbose execution logs.
 
-A router selects `direct` for normal dialogue and `task` for research, comparison, evaluation and report requests. This avoids paying the latency and token cost of a complete DAG for every conversational turn.
+A router selects `chat` for normal dialogue, `knowledge` for domain questions, and `task` for research, comparison, evaluation and report requests. The knowledge path rewrites contextual references into a standalone question, retrieves a small evidence set, and performs one citation-constrained generation call. This avoids paying the latency and token cost of a complete DAG for every factual turn while preventing domain questions from bypassing the knowledge base.
+
+The local retriever keeps paragraph-sized chunks with their active heading and document metadata. It combines a dependency-free sparse hashing vector index with lexical retrieval, reciprocal-rank fusion, and a metadata/language reranker; confidence controls whether the Agent answers or asks for clarification. Ambiguous terms such as `subgraph` are resolved from Agent/LangGraph metadata rather than a one-question hard-coded response. Contextual follow-ups use a dedicated query-rewrite call with a deterministic fallback. If routing fails because the model endpoint is temporarily unavailable, a local heuristic preserves chat/knowledge/task separation.
+
+Planner output is compacted to at most four tasks and at most two research branches. A runtime wall-clock budget prevents repeated evaluation and replanning from running indefinitely. The quality gate treats language mismatch, explicit length overflow, unknown citations and missing requested citation counts as deterministic hard failures; optional semantic judging handles paraphrases without overriding those boundaries.
 
 ## LLM and program boundary
 

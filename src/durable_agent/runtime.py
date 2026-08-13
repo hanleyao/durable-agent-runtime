@@ -66,7 +66,13 @@ def build_graph(
     progress: Progress | None = None,
     pause_before_node: str | None = None,
     pause_seconds: float = 0.0,
+    max_runtime_seconds: float = 480.0,
 ):
+    invocation_started = time.monotonic()
+
+    def budget_exhausted() -> bool:
+        return max_runtime_seconds > 0 and time.monotonic() - invocation_started >= max_runtime_seconds
+
     def pause(node: str) -> None:
         if pause_before_node != node:
             return
@@ -91,6 +97,12 @@ def build_graph(
 
     def schedule_node(state: RuntimeState) -> RuntimeState:
         pause("schedule")
+        if budget_exhausted():
+            return {
+                "phase": "failed",
+                "errors": [*state.get("errors", []), "Runtime time budget exhausted."],
+                "current_task_id": "",
+            }
         tasks = state["tasks"]
         for task in tasks.values():
             if task.status not in {"pending", "ready"}:
@@ -201,7 +213,11 @@ def build_graph(
         evaluation = state["evaluation"]
         if evaluation.get("passed"):
             return "finalize"
-        if evaluation.get("action") == "abort" or state.get("evaluation_count", 0) >= state.get("max_evaluations", 3):
+        if (
+            evaluation.get("action") == "abort"
+            or state.get("evaluation_count", 0) >= state.get("max_evaluations", 3)
+            or budget_exhausted()
+        ):
             return "finalize"
         return "repair"
 
@@ -299,6 +315,7 @@ def run_agent(
     continue_run: bool = False,
     max_steps: int = 4,
     max_evaluations: int = 3,
+    max_runtime_seconds: float = 480.0,
     evaluator_mode: str = "rules",
     memory_db: str | Path | None = None,
     trace_dir: str | Path | None = None,
@@ -338,6 +355,7 @@ def run_agent(
         progress=progress,
         pause_before_node=pause_before_node,
         pause_seconds=pause_seconds,
+        max_runtime_seconds=max_runtime_seconds,
     )
     config = {"configurable": {"thread_id": active_thread}}
     try:

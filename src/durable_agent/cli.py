@@ -59,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--continue", dest="continue_run", action="store_true")
     run.add_argument("--max-steps", type=int, default=4)
     run.add_argument("--max-evaluations", type=int, default=3)
+    run.add_argument("--max-runtime-seconds", type=float, default=480.0)
     run.add_argument("--evaluator", choices=["rules", "hybrid"], default="rules")
     run.add_argument("--quiet", action="store_true")
     run.add_argument("--json", action="store_true")
@@ -274,6 +275,7 @@ def main() -> int:
                 continue_run=True if is_resume else args.continue_run,
                 max_steps=4 if is_resume else args.max_steps,
                 max_evaluations=3 if is_resume else args.max_evaluations,
+                max_runtime_seconds=480.0 if is_resume else args.max_runtime_seconds,
                 evaluator_mode=args.evaluator,
                 memory_db=None if is_resume else args.memory_db,
                 trace_dir=None if is_resume else args.trace_dir,

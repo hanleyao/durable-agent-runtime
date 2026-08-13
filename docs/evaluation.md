@@ -1,5 +1,7 @@
 # Evaluation Workflow
 
+Deterministic E2E runs validate routing, persistence, DAG repair, citations and quality-gate wiring. They use fixed template answers and do not invoke the semantic judge, so failures caused only by paraphrase recognition or template language are diagnostic rather than model-quality metrics. Resume-facing answer-quality metrics must come from frozen LLM runs plus blinded human review.
+
 ## Dataset roles
 
 - `eval_set/`: visible synthetic regression cases used while developing rules.

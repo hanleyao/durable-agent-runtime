@@ -1,3 +1,10 @@
+---
+title: Idempotency and External Side Effects
+aliases: [idempotency, idempotent, 幂等, 幂等性, 重复执行]
+domains: [durable execution, external side effects]
+related: [checkpoint recovery, unique constraint, delivery record]
+confusable_with: [retry, exactly-once execution]
+---
 # Idempotency and External Side Effects
 
 幂等表示同一逻辑请求重复执行时不会产生额外的业务效果。检查点恢复可能重复经过崩溃附近的代码，因此外部 API、消息、邮件、支付和文件写入仍需稳定幂等键、唯一约束或投递记录。

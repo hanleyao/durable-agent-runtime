@@ -33,7 +33,7 @@ The private authoring, fingerprint lock, repeated LLM run and blinded human-revi
 
 ## Local knowledge base
 
-The bilingual, citation-ready local RAG knowledge base contains 18 Markdown documents and 71 retrievable chunks covering persistence, idempotency, background Jobs, planning, replanning, Graph boundaries, context, memory, tools, evaluation, citations, observability, fault injection, benchmarking, LangChain versus LangGraph, and the current limits around subagents and multi-agent systems.
+The bilingual, citation-ready local RAG knowledge base contains 18 Markdown documents and paragraph-sized, heading-aware chunks covering persistence, idempotency, background Jobs, planning, replanning, Graph boundaries, context, memory, tools, evaluation, citations, observability, fault injection, benchmarking, LangChain versus LangGraph, and the current limits around subagents and multi-agent systems.
 
 ```powershell
 durable-agent knowledge list
@@ -41,23 +41,23 @@ durable-agent knowledge search "checkpoint 和后台任务有什么区别"
 durable-agent knowledge search "revise replan abort" --json
 ```
 
-Research tasks are expected to stay within this evidence boundary. Direct conversation is not required to cite the local knowledge base.
+The conversational router has three paths: `chat` for ordinary dialogue, `knowledge` for lightweight evidence-grounded answers, and `task` for Planner/DAG execution. Knowledge retrieval combines sparse hashing vectors with lexical candidates, reciprocal-rank fusion and metadata-aware reranking. It exposes retrieval confidence, cites the chunks actually used, rewrites contextual follow-ups, and degrades safely when evidence or the model endpoint is unavailable. Research tasks use the same evidence boundary inside the full task runtime.
 
 这个项目把学习阶段的 Stage 2 与 Stage 3 能力整理为一个统一、可独立上传 GitHub 的工程：LLM 负责语义规划和任务决策，确定性 Runtime 负责 DAG 校验、工具边界、状态机、持久化、后台执行与质量门。
 
 ## 核心能力
 
-- 本地 RAG：Markdown 加载、切块、检索和 citation-ready evidence。
+- 本地 RAG：标题感知切块、领域与别名消歧、混合词法排序、置信度分级和 citation-ready evidence。
 - 持久化对话：同一 `session_id` 延续多轮消息，自动选择直接回答或任务 Runtime。
 - 上下文压缩：完整消息保留在 SQLite，模型只接收会话摘要和最近消息。
 - Agent Loop：模型决策、受限工具调用、观察、有限步数和重复调用缓存。
 - 长期记忆：SQLite memory store 与相关记忆检索。
-- LLM Planner：自然语言目标转 Task DAG，程序修复 ID、依赖、类型与环。
+- LLM Planner：自然语言目标转 Task DAG，程序修复 ID、依赖、类型与环，并强制限制任务规模避免过度拆分。
 - 动态 Replanner：结合失败任务、已有结果和 Evaluator 反馈生成修订 DAG，并安全复用未变化的已完成任务。
 - Task Runtime：research、analysis、report 依赖调度、失败传播和有限重试。
 - LangGraph Checkpoint：使用 `thread_id` 跨进程恢复执行状态。
 - Background Jobs：SQLite 队列、原子 claim、heartbeat、lease、取消、重试和日志。
-- Evaluator：目标覆盖、答案质量、证据支撑、引用完整性、执行可靠性和校准。
+- Evaluator：目标覆盖、答案质量、证据支撑、引用完整性、执行可靠性和校准，并硬检查语言、长度与最少引用数。
 - 质量闭环：`pass / revise / replan / abort` 驱动 Graph 后续动作。
 - 引用契约：多条 research 分支汇总时统一去重、重新编号；未知引用在 Agent Loop 内被拒绝并要求重写。
 - 固定评测集：版本、指纹、四分类指标、混淆矩阵和 CI quality gate。
@@ -69,7 +69,8 @@ Research tasks are expected to stay within this evidence boundary. Direct conver
 ```mermaid
 flowchart TD
     U["User / CLI"] --> H["Conversation session"]
-    H -->|direct| D["Conversational answer"]
+    H -->|chat| D["Conversational answer"]
+    H -->|knowledge| K["Lightweight grounded RAG"]
     H -->|task| R["LangGraph Runtime"]
     H -. messages + summary .-> Q["SQLite conversation store"]
     U --> J["Background Job Store"]
@@ -81,6 +82,7 @@ flowchart TD
     S --> A["Task Agent Loop"]
     A --> T["Restricted tools"]
     T --> G["Local RAG + SQLite memory"]
+    K --> G
     A --> E["Six-dimension Evaluator"]
     E -->|pass| O["Final report"]
     E -->|revise| S

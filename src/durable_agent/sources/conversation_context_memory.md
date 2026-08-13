@@ -1,3 +1,10 @@
+---
+title: Conversation, Session, Context, and Memory
+aliases: [memory, context, session, message, 长期记忆, 上下文, 会话]
+domains: [Agent memory, conversation]
+related: [context compaction, checkpoint]
+confusable_with: [workflow checkpoint, message history]
+---
 # Conversation, Session, Context, and Memory
 
 会话 Session 是跨轮次的持久对话边界，上下文 Context 是某次模型调用实际看到的摘要和近期消息，长期记忆 Memory 是跨会话复用的精选知识，检查点 Checkpoint 则保存一次 Graph 执行进度；四者生命周期和用途不同。

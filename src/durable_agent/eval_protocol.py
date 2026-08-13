@@ -47,7 +47,7 @@ def validate_e2e_dataset(path: str | Path, *, require_complete: bool = True) -> 
         if not isinstance(expected_routes, list) or len(expected_routes) != len(case.turns):
             errors.append(f"{case.id}: expected.routes must contain one route per turn")
             expected_routes = []
-        invalid_routes = [route for route in expected_routes if route not in {"direct", "task"}]
+        invalid_routes = [route for route in expected_routes if route not in {"direct", "chat", "knowledge", "task"}]
         if invalid_routes:
             errors.append(f"{case.id}: invalid routes {invalid_routes}")
         routes.update(str(route) for route in expected_routes)
@@ -140,7 +140,7 @@ def initialize_heldout(path: str | Path, count: int = 24) -> Path:
                 "category": "<填写类别>",
                 "turns": ["<填写一个真实用户请求；不要复制开发集>"],
                 "expected": {
-                    "routes": ["<direct或task>"],
+                    "routes": ["<chat、knowledge或task>"],
                     "final_status": "<task填写done；direct删除此字段>",
                     "allowed_actions": ["<task通常填写pass>"],
                     "required_topics": ["<填写必须覆盖的概念>"],
