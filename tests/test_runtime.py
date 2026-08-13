@@ -27,6 +27,7 @@ from durable_agent.memory import MemoryStore
 from durable_agent.models import Task
 from durable_agent.planner import Planner, find_cycle, repair_plan
 from durable_agent.rag import LocalRetriever
+from durable_agent.rag_eval import load_rag_cases, run_rag_evaluation, validate_rag_dataset
 from durable_agent.runtime import build_graph, merge_replanned_tasks, run_agent
 from durable_agent.trace import TraceLogger
 
@@ -312,6 +313,32 @@ class RuntimeTests(unittest.TestCase):
         self.assertGreater(match["vector_score"], 0)
         self.assertGreater(match["score"], 0)
         self.assertIn("lexical_score", match)
+
+    def test_rag_evaluation_reports_recall_and_mrr(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = Path(directory) / "rag.jsonl"
+            dataset.write_text(
+                '{"id":"subgraph","query":"LangGraph子图是什么",'
+                '"relevant":["graph_and_subgraphs#"],"category":"disambiguation","language":"zh"}\n'
+                '{"id":"jobs","query":"heartbeat lease",'
+                '"relevant":["background_jobs#"],"category":"definition","language":"en"}\n',
+                encoding="utf-8",
+            )
+            profile = validate_rag_dataset(dataset)
+            result = run_rag_evaluation(dataset, output_dir=Path(directory) / "results")
+        self.assertEqual(2, profile["case_count"])
+        self.assertEqual(1.0, result["metrics"]["recall_at_3"])
+        self.assertEqual(1.0, result["metrics"]["mrr"])
+
+    def test_rag_dataset_rejects_unknown_relevant_chunk(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = Path(directory) / "rag.jsonl"
+            dataset.write_text(
+                '{"id":"bad","query":"unknown","relevant":["missing_document#"],'
+                '"category":"negative","language":"en"}\n', encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                validate_rag_dataset(dataset)
 
     def test_multiturn_query_rewrite_is_used_for_knowledge_retrieval(self) -> None:
         class Client:

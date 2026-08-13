@@ -112,3 +112,20 @@ durable-agent review-pack `
 - 样本数、重复次数、模型版本和 95% bootstrap 置信区间。
 
 如果看过 held-out 结果后修改 Agent、Evaluator、prompt 或评分规则，该 held-out 立即降级为开发集，最终指标必须使用一套新的未见测试集。
+
+## 7. RAG检索评测
+
+最终答案通过率不能定位检索问题，因此单独维护RAG数据集。每条记录在运行前标注查询、相关文档或chunk前缀、类别和语言。运行：
+
+```powershell
+durable-agent rag-dataset-validate --dataset evals/rag/dev.jsonl
+durable-agent rag-eval --dataset evals/rag/dev.jsonl --output results/rag/dev
+```
+
+报告 Recall@1、Recall@3、Recall@5、MRR，并分别查看歧义消解、同义改写、比较、边界、中文和英文切片。RAG指标只衡量证据召回，不能替代回答忠实度和人工接受率。
+
+## 8. v0.6密封评测
+
+旧 `heldout-v1` 已参与v0.6问题分析，因此只能作为回归集。v0.6必须使用新问题建立 `heldout-v2`，在第一次运行前同时冻结E2E数据、RAG数据、rubric、代码和知识库。冻结后不得根据v2结果修改当前版本；如需修复，v2立即降级为开发集并另建v3。
+
+由项目开发者设计并密封的数据应称为 sealed/pre-registered set，而不是第三方独立held-out。最终结果仍需使用隐藏Evaluator预测的人工审核包。

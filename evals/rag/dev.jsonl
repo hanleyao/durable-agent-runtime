@@ -1,0 +1,20 @@
+{"id":"rag_dev_001","query":"LangGraph里的subgraph是干什么的？","relevant":["graph_and_subgraphs#"],"category":"disambiguation","language":"zh"}
+{"id":"rag_dev_002","query":"图中的子流程怎样降低父流程复杂度","relevant":["graph_and_subgraphs#"],"category":"paraphrase","language":"zh"}
+{"id":"rag_dev_003","query":"workflow snapshot resume by thread id","relevant":["checkpoint_recovery#"],"category":"paraphrase","language":"en"}
+{"id":"rag_dev_004","query":"检查点保存了哪些工作流状态","relevant":["checkpoint_recovery#"],"category":"definition","language":"zh"}
+{"id":"rag_dev_005","query":"Worker靠什么发现后台任务失联","relevant":["background_jobs#"],"category":"paraphrase","language":"zh"}
+{"id":"rag_dev_006","query":"heartbeat lease queue ownership","relevant":["background_jobs#"],"category":"definition","language":"en"}
+{"id":"rag_dev_007","query":"对话历史、上下文和长期记忆有什么不同","relevant":["conversation_context_memory#"],"category":"comparison","language":"zh"}
+{"id":"rag_dev_008","query":"session context memory lifecycle","relevant":["conversation_context_memory#"],"category":"comparison","language":"en"}
+{"id":"rag_dev_009","query":"为什么重复恢复不能保证外部写入只执行一次","relevant":["idempotency_side_effects#"],"category":"paraphrase","language":"zh"}
+{"id":"rag_dev_010","query":"stable idempotency key for external effects","relevant":["idempotency_side_effects#"],"category":"definition","language":"en"}
+{"id":"rag_dev_011","query":"LangChain与LangGraph如何选择","relevant":["langchain_vs_langgraph#"],"category":"comparison","language":"zh"}
+{"id":"rag_dev_012","query":"library integrations versus stateful orchestration","relevant":["langchain_vs_langgraph#"],"category":"comparison","language":"en"}
+{"id":"rag_dev_013","query":"模型提出的DAG为什么不能直接执行","relevant":["planner_and_dag#"],"category":"boundary","language":"zh"}
+{"id":"rag_dev_014","query":"validate dependencies and reject task cycles","relevant":["planner_and_dag#"],"category":"boundary","language":"en"}
+{"id":"rag_dev_015","query":"什么时候应该replan而不是只重写报告","relevant":["dynamic_replanning#","quality_evaluator#"],"category":"decision","language":"zh"}
+{"id":"rag_dev_016","query":"unknown citation must be rejected","relevant":["citation_integrity#"],"category":"boundary","language":"en"}
+{"id":"rag_dev_017","query":"如何检查恢复后有没有重复调度任务","relevant":["fault_injection#","observability#"],"category":"reliability","language":"zh"}
+{"id":"rag_dev_018","query":"Subagent和多智能体目前实现了吗","relevant":["subagents_and_multi_agent#"],"category":"capability","language":"zh"}
+{"id":"rag_dev_019","query":"压缩上下文时什么应该保留什么应该丢弃","relevant":["context_compaction#"],"category":"definition","language":"zh"}
+{"id":"rag_dev_020","query":"tool allowlist and untrusted input boundary","relevant":["tools_and_safety#"],"category":"safety","language":"en"}

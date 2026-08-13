@@ -23,6 +23,7 @@ from durable_agent.fault import DEFAULT_POINTS, load_fault_cases, run_fault_tria
 from durable_agent.jobs import Job, JobStore, launch_worker, run_worker, tail
 from durable_agent.memory import MemoryStore
 from durable_agent.rag import LocalRetriever
+from durable_agent.rag_eval import run_rag_evaluation, validate_rag_dataset
 from durable_agent.runtime import run_agent
 
 
@@ -166,6 +167,17 @@ def build_parser() -> argparse.ArgumentParser:
     review = sub.add_parser("review-pack", help="Create a blinded human-review file from E2E runs")
     review.add_argument("runs")
     review.add_argument("--output", required=True)
+
+    rag_validate = sub.add_parser("rag-dataset-validate", help="Validate and profile a retrieval evaluation set")
+    rag_validate.add_argument("--dataset", required=True)
+    rag_validate.add_argument("--json", action="store_true")
+    rag_evaluate = sub.add_parser("rag-eval", help="Measure retrieval Recall@K and MRR")
+    rag_evaluate.add_argument("--dataset", required=True)
+    rag_evaluate.add_argument("--top-k", type=int, default=5)
+    rag_evaluate.add_argument("--output")
+    rag_evaluate.add_argument("--min-recall-at-3", type=float, default=0.0)
+    rag_evaluate.add_argument("--json", action="store_true")
+    rag_evaluate.add_argument("--lock", help="Require a valid frozen evaluation lock before running")
 
     memory = sub.add_parser("memory", help="Add or search long-term memory")
     memory_sub = memory.add_subparsers(dest="memory_command", required=True)
@@ -539,6 +551,39 @@ def main() -> int:
             return 2
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
+
+    if args.command == "rag-dataset-validate":
+        try:
+            profile = validate_rag_dataset(args.dataset)
+        except Exception as exc:
+            print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(profile, ensure_ascii=False, indent=2) if args.json else (
+            f"valid cases={profile['case_count']} sha256={profile['dataset_sha256']}\n"
+            f"categories={json.dumps(profile['category_counts'], ensure_ascii=False)}\n"
+            f"languages={json.dumps(profile['language_counts'], ensure_ascii=False)}"
+        ))
+        return 0
+
+    if args.command == "rag-eval":
+        try:
+            if args.lock:
+                verification = verify_evaluation_lock(args.lock, project_dir=settings.project_dir)
+                if not verification["valid"]:
+                    raise ValueError(f"Evaluation lock mismatch: {verification['mismatches']}")
+            result = run_rag_evaluation(args.dataset, output_dir=args.output, top_k=args.top_k)
+        except Exception as exc:
+            print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        metrics = result["metrics"]
+        if args.json:
+            print(json.dumps({key: value for key, value in result.items() if key != "runs"}, ensure_ascii=False, indent=2))
+        else:
+            print("\nRAG RETRIEVAL EVALUATION")
+            print(f"cases={metrics['cases']} recall@1={metrics['recall_at_1']:.1%} recall@3={metrics['recall_at_3']:.1%} recall@5={metrics['recall_at_5']:.1%} mrr={metrics['mrr']:.3f}")
+            if result.get("output_dir"):
+                print(f"output={result['output_dir']}")
+        return 0 if metrics["recall_at_3"] >= max(0.0, min(1.0, args.min_recall_at_3)) else 1
 
     if args.command == "knowledge":
         retriever = LocalRetriever()

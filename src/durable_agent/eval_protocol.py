@@ -10,6 +10,7 @@ from typing import Any
 
 from durable_agent import __version__
 from durable_agent.e2e import _jsonl, load_e2e_cases
+from durable_agent.rag_eval import validate_rag_dataset
 
 
 def sha256_file(path: str | Path) -> str:
@@ -84,7 +85,12 @@ def freeze_evaluation(
     project_dir: str | Path,
 ) -> dict[str, Any]:
     root = Path(project_dir).resolve()
-    profile = validate_e2e_dataset(dataset)
+    first_rows = _jsonl(Path(dataset).resolve())
+    evaluation_type = "rag_retrieval" if first_rows and "query" in first_rows[0] else "e2e"
+    if evaluation_type == "rag_retrieval":
+        profile = validate_rag_dataset(dataset)
+    else:
+        profile = validate_e2e_dataset(dataset)
     rubric_path = Path(rubric).resolve()
     dataset_path = Path(dataset).resolve()
     dataset_reference = str(dataset_path.relative_to(root)) if dataset_path.is_relative_to(root) else str(dataset_path)
@@ -97,6 +103,7 @@ def freeze_evaluation(
         "schema_version": "1.0.0",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "agent_version": __version__,
+        "evaluation_type": evaluation_type,
         "git_commit": _git_commit(root),
         **{**profile, "dataset": dataset_reference},
         "rubric": rubric_reference,
