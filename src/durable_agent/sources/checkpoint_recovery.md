@@ -1,3 +1,10 @@
+---
+title: Checkpoint and Recovery
+aliases: [checkpoint, 检查点, 断点恢复, 任务持久化]
+domains: [LangGraph, durable execution]
+related: [SQLite checkpointer, thread_id, recovery]
+confusable_with: [job store, process liveness]
+---
 # Checkpoint and Recovery
 
 工作流检查点在可持久化的节点边界保存 Graph 状态，并通过 `thread_id` 定位一次执行。进程重启后可以读取已完成任务、未完成任务和评估状态，从最近的可靠进度继续运行。

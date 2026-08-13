@@ -237,7 +237,42 @@ class RuntimeTests(unittest.TestCase):
                 store=ConversationStore(Path(directory) / "conversations.sqlite"),
             )
             result = agent.reply("用一句话解释幂等，不需要做调研。", session_id="demo")
-        self.assertEqual("direct", result["route"])
+        self.assertEqual("knowledge", result["route"])
+
+    def test_domain_question_uses_lightweight_knowledge_route(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            agent = ConversationalAgent(
+                mode="deterministic",
+                store=ConversationStore(Path(directory) / "conversations.sqlite"),
+            )
+            result = agent.reply("什么是 subgraph？", session_id="knowledge")
+        self.assertEqual("knowledge", result["route"])
+        self.assertTrue(result["answer"].strip())
+        self.assertIn("graph_and_subgraphs#", result["runtime_metrics"]["retrieved_chunks"][0])
+        self.assertIn(result["runtime_metrics"]["retrieval_confidence"], {"medium", "high"})
+
+    def test_router_network_failure_degrades_to_local_knowledge_route(self) -> None:
+        class BrokenClient:
+            def complete_json(self, system, user):
+                raise RuntimeError("network unavailable")
+
+        with tempfile.TemporaryDirectory() as directory:
+            agent = ConversationalAgent(
+                store=ConversationStore(Path(directory) / "conversations.sqlite"),
+                client=BrokenClient(),
+            )
+            result = agent.reply("LangGraph 的 checkpoint 是什么？", session_id="fallback")
+        self.assertEqual("knowledge", result["route"])
+        self.assertTrue(result["answer"])
+
+    def test_ordinary_conversation_does_not_trigger_rag(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            agent = ConversationalAgent(
+                mode="deterministic",
+                store=ConversationStore(Path(directory) / "conversations.sqlite"),
+            )
+            result = agent.reply("你好，先记住我正在学习 Agent。", session_id="chat")
+        self.assertEqual("chat", result["route"])
 
     def test_chat_compacts_context_without_deleting_audit_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -258,6 +293,43 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(matches)
         self.assertEqual("[1]", matches[0]["citation_id"])
         self.assertTrue(matches[0]["text"])
+
+    def test_retriever_disambiguates_langgraph_subgraph(self) -> None:
+        retriever = LocalRetriever()
+        matches = retriever.search("什么是 subgraph？", top_k=3)
+        self.assertTrue(matches)
+        self.assertTrue(matches[0]["chunk_id"].startswith("graph_and_subgraphs#"))
+        self.assertIn("LangGraph", matches[0]["domains"])
+        self.assertIn("graph theory subgraph", matches[0]["confusable_with"])
+
+    def test_retriever_keeps_paragraph_sized_chunks(self) -> None:
+        chunks = LocalRetriever().load()
+        self.assertGreaterEqual(len(chunks), 67)
+        self.assertLess(max(len(chunk.text) for chunk in chunks), 2000)
+
+    def test_retriever_exposes_vector_and_reranker_scores(self) -> None:
+        match = LocalRetriever().search("workflow state snapshot recovery", top_k=1)[0]
+        self.assertGreater(match["vector_score"], 0)
+        self.assertGreater(match["score"], 0)
+        self.assertIn("lexical_score", match)
+
+    def test_multiturn_query_rewrite_is_used_for_knowledge_retrieval(self) -> None:
+        class Client:
+            def complete_json(self, system, user):
+                if "Route one conversational turn" in system:
+                    return {"route": "knowledge", "standalone_goal": "它和 job store 的区别", "reason": "domain question"}
+                if "Rewrite the current domain question" in system:
+                    return {"query": "LangGraph checkpoint 和 job store 有什么区别"}
+                return {"answer": "检查点保存工作流状态，Job Store 保存后台队列状态。[1]", "used_citations": ["[1]"]}
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConversationStore(Path(directory) / "conversations.sqlite")
+            store.add_message("rewrite", "user", "我们讨论 LangGraph checkpoint。")
+            store.add_message("rewrite", "assistant", "好的。", route="chat")
+            agent = ConversationalAgent(store=store, client=Client())
+            result = agent.reply("它和 job store 有什么区别？", session_id="rewrite")
+        self.assertEqual("knowledge", result["route"])
+        self.assertEqual("LangGraph checkpoint 和 job store 有什么区别", result["runtime_metrics"]["rewritten_query"])
 
     def test_knowledge_base_covers_core_runtime_topics(self) -> None:
         retriever = LocalRetriever()
@@ -316,6 +388,16 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("report", tasks)
         self.assertTrue(repairs)
 
+    def test_plan_repair_compacts_over_decomposed_dag(self) -> None:
+        raw = {"tasks": [
+            {"id": f"research_{index}", "goal": f"research topic {index}", "kind": "research", "blocked_by": []}
+            for index in range(5)
+        ] + [{"id": "report", "goal": "write report", "kind": "report", "blocked_by": ["research_0"]}]}
+        tasks, repairs = repair_plan(raw, "research and report")
+        self.assertLessEqual(len(tasks), 4)
+        self.assertLessEqual(sum(task.kind == "research" for task in tasks.values()), 2)
+        self.assertTrue(any("Compacted" in item for item in repairs))
+
     def test_cycle_falls_back_to_safe_deterministic_plan(self) -> None:
         tasks, repairs = repair_plan({"tasks": [
             {"id": "a", "goal": "a", "kind": "analysis", "blocked_by": ["b"]},
@@ -333,6 +415,28 @@ class RuntimeTests(unittest.TestCase):
         })
         self.assertEqual("revise", revise.action)
         self.assertEqual("replan", replan.action)
+
+    def test_evaluator_rejects_wrong_language_and_requested_length(self) -> None:
+        wrong_language = QualityEvaluator().evaluate({
+            "goal": "请用中文解释检查点恢复机制。",
+            "answer": "Checkpoint recovery restores persisted workflow state after an interrupted process and continues execution safely.",
+        })
+        too_long = QualityEvaluator().evaluate({
+            "goal": "请用不超过20字说明检查点。",
+            "answer": "检查点会保存工作流的完整状态，以便进程发生中断以后可以继续恢复执行。",
+        })
+        self.assertIn("language_mismatch", wrong_language.hard_failures)
+        self.assertIn("length_exceeded", too_long.hard_failures)
+
+    def test_evaluator_enforces_requested_distinct_citations(self) -> None:
+        report = QualityEvaluator().evaluate({
+            "goal": "调研证据管理，报告至少使用两条不同引用。",
+            "answer": "证据需要统一编号。[1]",
+            "evidence": [{"citation_id": "[1]"}, {"citation_id": "[2]"}],
+            "citations": [{"id": "[1]"}, {"id": "[2]"}],
+            "used_citations": ["[1]"],
+        })
+        self.assertIn("minimum_citations_missing", report.hard_failures)
 
     def test_llm_judge_cannot_override_deterministic_hard_failure(self) -> None:
         judge = lambda system, user: {"scores": {name: 1.0 for name in (

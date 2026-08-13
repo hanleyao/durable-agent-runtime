@@ -52,10 +52,10 @@ class MemoryStore:
     def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute("SELECT * FROM memories ORDER BY id DESC LIMIT 200").fetchall()
-        query_tokens = tokens(query)
+        query_tokens = set(tokens(query))
         ranked = []
         for row in rows:
-            overlap = len(query_tokens & tokens(row["content"]))
+            overlap = len(query_tokens & set(tokens(row["content"])))
             if overlap:
                 ranked.append((overlap, row))
         ranked.sort(key=lambda item: (-item[0], -item[1]["id"]))

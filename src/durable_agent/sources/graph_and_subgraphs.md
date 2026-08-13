@@ -1,3 +1,10 @@
+---
+title: Graph Boundaries and Subgraphs
+aliases: [subgraph, 子图, 子流程, graph boundary, 图边界]
+domains: [LangGraph, Agent workflow]
+related: [StateGraph, task graph, subagent]
+confusable_with: [图论子图, graph theory subgraph, subagent]
+---
 # Graph Boundaries and Subgraphs
 
 顶层 Graph 规定规划、调度、执行、处理结果、评估、修复和结束之间的合法路径。子图适合封装单个任务内部可复用的搜索、阅读和综合流程，使父图保持轻量并保留内部边界。

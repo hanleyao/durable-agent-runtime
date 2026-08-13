@@ -1,3 +1,10 @@
+---
+title: Background Jobs, Heartbeat, and Lease
+aliases: [job store, 后台任务, 长任务, heartbeat, lease]
+domains: [background jobs, durable execution]
+related: [worker, retry, checkpoint]
+confusable_with: [workflow checkpoint]
+---
 # Background Jobs, Heartbeat, and Lease
 
 后台 Job Store 管理排队、领取、心跳、租约、取消、尝试次数和 Worker 所有权。心跳续租表明 Worker 仍持有任务；租约过期允许系统回收失联任务，但不代表工作流业务状态已经丢失。

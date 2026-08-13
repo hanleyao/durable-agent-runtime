@@ -1,3 +1,10 @@
+---
+title: LangChain and LangGraph
+aliases: [LangChain, LangGraph, 链和图, framework comparison]
+domains: [Agent framework]
+related: [orchestration, StateGraph, agent tools]
+confusable_with: [competing replacements]
+---
 # LangChain and LangGraph
 
 LangChain 和 LangGraph 处于不同抽象层。LangChain 提供较高层的 Agent 框架、预构建 Agent 架构，以及统一的模型、工具和集成接口，适合快速构建常见的 LLM 与工具调用应用。LangGraph 是较低层的 Agent 编排框架和 Runtime，适合需要显式状态、节点与边、持久化、长任务恢复、流式处理和 human-in-the-loop 的复杂工作流。
